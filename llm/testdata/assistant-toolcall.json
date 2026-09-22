@@ -1,0 +1,44 @@
+{
+  "role": "assistant",
+  "content": [
+    {
+      "type": "thinking",
+      "thinking": "The user wants a summary; read the plan first.",
+      "thinkingSignature": "sig1"
+    },
+    {
+      "type": "text",
+      "text": "Reading the plan now."
+    },
+    {
+      "type": "toolCall",
+      "id": "call_1",
+      "name": "read",
+      "arguments": {
+        "path": "PLAN.md",
+        "limit": 200
+      }
+    }
+  ],
+  "provider": "anthropic",
+  "model": "claude-sonnet-4-5",
+  "responseModel": "claude-sonnet-4-5",
+  "thinkingLevel": "high",
+  "stopReason": "toolUse",
+  "usage": {
+    "input": 1024,
+    "output": 512,
+    "cacheRead": 2048,
+    "cacheWrite": 0,
+    "reasoning": 128,
+    "totalTokens": 3712,
+    "cost": {
+      "input": 0.003,
+      "output": 0.0025,
+      "cacheRead": 0.0003,
+      "cacheWrite": 0,
+      "total": 0.0058
+    }
+  },
+  "timestamp": 1733234400200
+}

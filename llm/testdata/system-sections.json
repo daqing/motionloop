@@ -1,0 +1,28 @@
+{
+  "role": "system",
+  "sections": {
+    "cwd": "/project",
+    "preamble": "You are a coding agent."
+  },
+  "toolsAdded": [
+    {
+      "name": "read",
+      "description": "Read a file",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    }
+  ],
+  "toolsRemoved": [
+    "write"
+  ],
+  "timestamp": 1733234400600
+}

@@ -1,0 +1,10 @@
+{
+  "role": "user",
+  "content": [
+    {
+      "type": "text",
+      "text": "Read PLAN.md and summarize it."
+    }
+  ],
+  "timestamp": 1733234400000
+}

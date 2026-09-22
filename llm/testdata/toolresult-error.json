@@ -1,0 +1,13 @@
+{
+  "role": "toolResult",
+  "content": [
+    {
+      "type": "text",
+      "text": "exit status 1"
+    }
+  ],
+  "toolCallId": "call_2",
+  "toolName": "bash",
+  "isError": true,
+  "timestamp": 1733234400500
+}

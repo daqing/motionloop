@@ -1,0 +1,8 @@
+{
+  "role": "assistant",
+  "provider": "openai",
+  "model": "gpt-5.2",
+  "stopReason": "error",
+  "errorMessage": "stream disconnected",
+  "timestamp": 1733234400300
+}

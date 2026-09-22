@@ -1,0 +1,15 @@
+{
+  "role": "user",
+  "content": [
+    {
+      "type": "text",
+      "text": "What is in this screenshot?"
+    },
+    {
+      "type": "image",
+      "data": "aGVsbG8=",
+      "mimeType": "image/png"
+    }
+  ],
+  "timestamp": 1733234400100
+}

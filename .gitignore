@@ -1,0 +1,5 @@
+/motionloop
+/dist/
+.DS_Store
+*.test
+coverage.out

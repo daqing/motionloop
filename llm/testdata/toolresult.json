@@ -1,0 +1,12 @@
+{
+  "role": "toolResult",
+  "content": [
+    {
+      "type": "text",
+      "text": "1\t# Motionloop"
+    }
+  ],
+  "toolCallId": "call_1",
+  "toolName": "read",
+  "timestamp": 1733234400400
+}
