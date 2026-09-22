@@ -1,0 +1,8 @@
+{"type":"session","version":1,"id":"0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0","timestamp":"2026-09-22T08:00:00.000Z","cwd":"/Users/dev/project"}
+{"type":"message","id":"a1b2c3d4","timestamp":"2026-09-22T08:00:01.000Z","message":{"role":"system","content":[{"type":"text","text":"You are a coding agent."}],"sections":{"cwd":"/Users/dev/project"},"toolsAdded":[{"name":"read"},{"name":"bash"}],"timestamp":1733234400000}}
+{"type":"message","id":"b2c3d4e5","parentId":"a1b2c3d4","timestamp":"2026-09-22T08:00:02.000Z","message":{"role":"user","content":[{"type":"text","text":"fix the test"}],"timestamp":1733234401000}}
+{"type":"message","id":"c3d4e5f6","parentId":"b2c3d4e5","timestamp":"2026-09-22T08:00:03.000Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_1","name":"bash","arguments":{"command":"go test ./..."}}],"provider":"openai","model":"gpt-5.2","stopReason":"toolUse","timestamp":1733234402000}}
+{"type":"message","id":"d4e5f6a7","parentId":"c3d4e5f6","timestamp":"2026-09-22T08:00:04.000Z","message":{"role":"toolResult","content":[{"type":"text","text":"ok"}],"toolCallId":"call_1","toolName":"bash","timestamp":1733234403000}}
+{"type":"model_change","id":"e5f6a7b8","parentId":"d4e5f6a7","timestamp":"2026-09-22T08:05:00.000Z","provider":"anthropic","modelId":"claude-sonnet-4-5"}
+{"type":"thinking_level_change","id":"f6a7b8c9","parentId":"e5f6a7b8","timestamp":"2026-09-22T08:06:00.000Z","thinkingLevel":"high"}
+{"type":"usage","id":"a7b8c9d0","parentId":"f6a7b8c9","timestamp":"2026-09-22T08:07:00.000Z","usage":{"input":1000,"output":300,"cacheRead":0,"cacheWrite":0,"totalTokens":1300,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0.01}}}
