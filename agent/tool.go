@@ -7,6 +7,33 @@ import (
 	"github.com/daqing/motionloop/llm"
 )
 
+// ExecutionMode selects how one tool's calls are scheduled within a batch.
+type ExecutionMode int
+
+const (
+	// ExecutionParallel runs concurrently with other tool calls. It is the
+	// default for every tool.
+	ExecutionParallel ExecutionMode = iota
+	// ExecutionSequential must not run concurrently with anything. Any
+	// batch containing a sequential call degrades to fully sequential
+	// execution.
+	ExecutionSequential
+)
+
+// executionModeAware is the optional interface a Tool implements to force
+// sequential scheduling; tools that do not implement it run parallel.
+type executionModeAware interface {
+	ExecutionMode() ExecutionMode
+}
+
+// modeOf reports a tool's execution mode, parallel by default.
+func modeOf(t Tool) ExecutionMode {
+	if m, ok := t.(executionModeAware); ok {
+		return m.ExecutionMode()
+	}
+	return ExecutionParallel
+}
+
 // Tool is the extension atom of the framework. Implementations declare
 // their arguments as a struct with `json` and `jsonschema` tags and pass it
 // to SchemaFor to produce Parameters.

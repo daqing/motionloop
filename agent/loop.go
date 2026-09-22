@@ -19,6 +19,10 @@ var ErrStreamFailed = errors.New("llm stream failed")
 // ErrAborted wraps provider-side aborts that are not context cancellations.
 var ErrAborted = errors.New("run aborted")
 
+// ErrRunInProgress is returned by Prompt and Continue when another run has
+// not settled. Steer and FollowUp stay available while a run is in flight.
+var ErrRunInProgress = errors.New("agent: a run is already in progress")
+
 // Option configures an Agent.
 type Option func(*Agent)
 
@@ -75,11 +79,11 @@ func WithConvertToLLM(hook ConvertToLLM) Option {
 	return func(a *Agent) { a.convertToLLM = hook }
 }
 
-// Agent runs the LLM-to-tool loop against one provider and model. A Prompt
-// call streams one assistant response, executes requested tools in
-// assistant source order, and continues until the assistant stops calling
-// tools, every result in a batch asks to terminate, the stream fails, or
-// the context is canceled.
+// Agent runs the LLM-to-tool loop against one provider and model. Each run
+// streams one assistant response per turn, executes requested tool calls
+// (parallel by default, in assistant source order for persistence), and
+// continues until the assistant stops calling tools, every result in a
+// batch asks to terminate, the stream fails, or the context is canceled.
 type Agent struct {
 	provider     llm.Provider
 	model        llm.Model
@@ -99,6 +103,9 @@ type Agent struct {
 	messages []llm.Message
 	subs     []func(Event)
 	toolset  map[string]Tool
+	steerQ   []llm.Message
+	followQ  []llm.Message
+	running  bool
 }
 
 // New creates an Agent.
@@ -128,8 +135,70 @@ func (a *Agent) Messages() []llm.Message {
 	return append([]llm.Message(nil), a.messages...)
 }
 
+// Steer queues a user message for injection at the next turn boundary.
+// One-at-a-time: only the oldest queued message drains per boundary.
+func (a *Agent) Steer(text string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.steerQ = append(a.steerQ, llm.Message{
+		Role:      llm.RoleUser,
+		Content:   []llm.ContentBlock{llm.TextBlock{Text: text}},
+		Timestamp: now(),
+	})
+}
+
+// FollowUp queues a user message that Continue consumes when a run has
+// naturally stopped on an assistant tail.
+func (a *Agent) FollowUp(text string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.followQ = append(a.followQ, llm.Message{
+		Role:      llm.RoleUser,
+		Content:   []llm.ContentBlock{llm.TextBlock{Text: text}},
+		Timestamp: now(),
+	})
+}
+
+// Continue starts a run from the existing transcript. A user or toolResult
+// tail retries directly; an assistant tail first consumes one queued
+// steering message, then one queued follow-up.
+func (a *Agent) Continue(ctx context.Context) error {
+	if !a.beginRun() {
+		return ErrRunInProgress
+	}
+	defer a.endRun()
+
+	a.mu.Lock()
+	n := len(a.messages)
+	tailIsAssistant := n > 0 && a.messages[n-1].Role == llm.RoleAssistant
+	onlySystem := n == 0 || (n == 1 && a.messages[0].Role == llm.RoleSystem)
+	a.mu.Unlock()
+	if onlySystem {
+		return errors.New("agent: nothing to continue")
+	}
+
+	var pending *llm.Message
+	if m := a.drainSteering(); m != nil {
+		a.appendMessage(*m)
+		pending = m
+	} else if tailIsAssistant {
+		if m := a.drainFollowUp(); m != nil {
+			a.appendMessage(*m)
+			pending = m
+		} else {
+			return errors.New("agent: continuing after an assistant tail requires queued steering or follow-up input")
+		}
+	}
+	return a.loop(ctx, pending)
+}
+
 // Prompt drives one run.
 func (a *Agent) Prompt(ctx context.Context, input string) error {
+	if !a.beginRun() {
+		return ErrRunInProgress
+	}
+	defer a.endRun()
+
 	a.mu.Lock()
 	if len(a.messages) == 0 && a.systemPrompt != "" {
 		msg := llm.Message{
@@ -148,25 +217,39 @@ func (a *Agent) Prompt(ctx context.Context, input string) error {
 		Timestamp: now(),
 	}
 	a.appendMessage(userMsg)
+	return a.loop(ctx, &userMsg)
+}
 
+func (a *Agent) loop(ctx context.Context, firstPending *llm.Message) error {
 	a.emit(AgentStart{})
-	defer a.emit(AgentEnd{Messages: a.Messages()})
+	defer func() { a.emit(AgentEnd{Messages: a.Messages()}) }()
 
 	first := true
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		a.emit(TurnStart{})
+		var pending *llm.Message
 		if first {
-			first = false
-			if a.systemMsg != nil {
-				a.emit(MessageStart{Message: *a.systemMsg})
-				a.emit(MessageEnd{Message: *a.systemMsg})
-			}
-			a.emit(MessageStart{Message: userMsg})
-			a.emit(MessageEnd{Message: userMsg})
+			pending = firstPending
+		} else if m := a.drainSteering(); m != nil {
+			a.appendMessage(*m)
+			pending = m
 		}
+		a.emit(TurnStart{})
+		if first && a.systemMsg != nil {
+			a.mu.Lock()
+			sys := *a.systemMsg
+			a.systemMsg = nil
+			a.mu.Unlock()
+			a.emit(MessageStart{Message: sys})
+			a.emit(MessageEnd{Message: sys})
+		}
+		if pending != nil {
+			a.emit(MessageStart{Message: *pending})
+			a.emit(MessageEnd{Message: *pending})
+		}
+		first = false
 
 		assistant, err := a.streamAssistant(ctx)
 		if err != nil {
@@ -274,69 +357,129 @@ func (a *Agent) streamAssistant(ctx context.Context) (llm.Message, error) {
 	return assistant, nil
 }
 
+// outcome is one finalized tool result, in source order when indexed.
+type outcome struct {
+	res   Result
+	isErr bool
+}
+
 func (a *Agent) executeTools(ctx context.Context, assistant llm.Message) ([]llm.Message, bool) {
-	var results []llm.Message
-	allTerminate := true
+	var calls []llm.ToolCallBlock
 	for _, b := range assistant.Content {
-		tc, ok := b.(llm.ToolCallBlock)
+		if tc, ok := b.(llm.ToolCallBlock); ok {
+			calls = append(calls, tc)
+		}
+	}
+	if len(calls) == 0 {
+		return nil, false
+	}
+
+	type prepared struct {
+		idx  int
+		tc   llm.ToolCallBlock
+		tool Tool
+		call ToolCall
+		done *outcome
+	}
+
+	batchSequential := false
+	preflight := make([]prepared, 0, len(calls))
+	for i, tc := range calls {
+		a.emit(ToolExecutionStart{ToolCallID: tc.ID, ToolName: tc.Name, Arguments: tc.Arguments})
+		p := prepared{idx: i, tc: tc}
+
+		tool, ok := a.lookupTool(tc.Name)
 		if !ok {
+			p.done = a.finalizePreflight(tc, ErrorResult(fmt.Errorf("unknown tool %q", tc.Name)))
+			preflight = append(preflight, p)
 			continue
 		}
-		res, isErr := a.runTool(ctx, tc)
-		if !res.Terminate {
-			allTerminate = false
+		if err := Validate(tool.Parameters(), tc.Arguments); err != nil {
+			p.done = a.finalizePreflight(tc, ErrorResult(fmt.Errorf("invalid arguments: %v", err)))
+			preflight = append(preflight, p)
+			continue
 		}
+		call := ToolCall{ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments}
+		if a.beforeToolCall != nil {
+			verdict := a.beforeToolCall(ctx, call)
+			if verdict.Block {
+				reason := verdict.Reason
+				if reason == "" {
+					reason = "tool call blocked"
+				}
+				p.done = a.finalizePreflight(tc, Result{
+					Content:   []llm.ContentBlock{llm.TextBlock{Text: reason}},
+					Terminate: verdict.Terminate,
+				})
+				preflight = append(preflight, p)
+				continue
+			}
+		}
+		if modeOf(tool) == ExecutionSequential {
+			batchSequential = true
+		}
+		p.tool = tool
+		p.call = call
+		preflight = append(preflight, p)
+	}
+
+	outcomes := make([]outcome, len(calls))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, p := range preflight {
+		if p.done != nil {
+			outcomes[p.idx] = *p.done
+			continue
+		}
+		if batchSequential {
+			outcomes[p.idx] = a.runExecuted(ctx, p.tc, p.tool, p.call)
+			continue
+		}
+		wg.Add(1)
+		go func(p prepared) {
+			defer wg.Done()
+			out := a.runExecuted(ctx, p.tc, p.tool, p.call)
+			mu.Lock()
+			outcomes[p.idx] = out
+			mu.Unlock()
+		}(p)
+	}
+	wg.Wait()
+
+	results := make([]llm.Message, 0, len(calls))
+	allTerminate := true
+	for i, out := range outcomes {
+		tc := calls[i]
 		msg := llm.Message{
 			Role:       llm.RoleToolResult,
 			ToolCallID: tc.ID,
 			ToolName:   tc.Name,
-			Content:    res.Content,
-			IsError:    isErr,
+			Content:    out.res.Content,
+			IsError:    out.isErr,
 			Timestamp:  now(),
 		}
 		a.emit(MessageStart{Message: msg})
 		a.appendMessage(msg)
 		a.emit(MessageEnd{Message: msg})
 		results = append(results, msg)
+		if !out.res.Terminate {
+			allTerminate = false
+		}
 	}
 	return results, allTerminate && len(results) > 0
 }
 
-func (a *Agent) runTool(ctx context.Context, tc llm.ToolCallBlock) (Result, bool) {
-	a.mu.Lock()
-	tool, ok := a.toolset[tc.Name]
-	a.mu.Unlock()
-	if !ok {
-		res := ErrorResult(fmt.Errorf("unknown tool %q", tc.Name))
-		a.emit(ToolExecutionStart{ToolCallID: tc.ID, ToolName: tc.Name, Arguments: tc.Arguments})
-		a.emit(ToolExecutionEnd{ToolCallID: tc.ID, ToolName: tc.Name, Result: res, IsError: true})
-		return res, true
-	}
+// finalizePreflight closes a call that never executes (unknown tool,
+// invalid arguments, blocked by BeforeToolCall) with an error-flagged
+// result.
+func (a *Agent) finalizePreflight(tc llm.ToolCallBlock, res Result) *outcome {
+	a.emit(ToolExecutionEnd{ToolCallID: tc.ID, ToolName: tc.Name, Result: res, IsError: true})
+	return &outcome{res: res, isErr: true}
+}
 
-	a.emit(ToolExecutionStart{ToolCallID: tc.ID, ToolName: tc.Name, Arguments: tc.Arguments})
-	if err := Validate(tool.Parameters(), tc.Arguments); err != nil {
-		res := ErrorResult(fmt.Errorf("invalid arguments: %v", err))
-		a.emit(ToolExecutionEnd{ToolCallID: tc.ID, ToolName: tc.Name, Result: res, IsError: true})
-		return res, true
-	}
-
-	call := ToolCall{ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments}
-	if a.beforeToolCall != nil {
-		verdict := a.beforeToolCall(ctx, call)
-		if verdict.Block {
-			reason := verdict.Reason
-			if reason == "" {
-				reason = "tool call blocked"
-			}
-			res := Result{
-				Content:   []llm.ContentBlock{llm.TextBlock{Text: reason}},
-				Terminate: verdict.Terminate,
-			}
-			a.emit(ToolExecutionEnd{ToolCallID: tc.ID, ToolName: tc.Name, Result: res, IsError: true})
-			return res, true
-		}
-	}
-
+// runExecuted performs one tool execution with the AfterToolCall override
+// applied, emitting updates and the completion-order ToolExecutionEnd.
+func (a *Agent) runExecuted(ctx context.Context, tc llm.ToolCallBlock, tool Tool, call ToolCall) outcome {
 	res, err := tool.Execute(ctx, call, func(u Update) {
 		a.emit(ToolExecutionUpdate{ToolCallID: tc.ID, ToolName: tc.Name, Update: u})
 	})
@@ -360,7 +503,52 @@ func (a *Agent) runTool(ctx context.Context, tc llm.ToolCallBlock) (Result, bool
 		}
 	}
 	a.emit(ToolExecutionEnd{ToolCallID: tc.ID, ToolName: tc.Name, Result: res, IsError: isErr})
-	return res, isErr
+	return outcome{res: res, isErr: isErr}
+}
+
+func (a *Agent) lookupTool(name string) (Tool, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	t, ok := a.toolset[name]
+	return t, ok
+}
+
+func (a *Agent) drainSteering() *llm.Message {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.steerQ) == 0 {
+		return nil
+	}
+	m := a.steerQ[0]
+	a.steerQ = a.steerQ[1:]
+	return &m
+}
+
+func (a *Agent) drainFollowUp() *llm.Message {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.followQ) == 0 {
+		return nil
+	}
+	m := a.followQ[0]
+	a.followQ = a.followQ[1:]
+	return &m
+}
+
+func (a *Agent) beginRun() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.running {
+		return false
+	}
+	a.running = true
+	return true
+}
+
+func (a *Agent) endRun() {
+	a.mu.Lock()
+	a.running = false
+	a.mu.Unlock()
 }
 
 func (a *Agent) toolDecls() []llm.ToolDecl {
