@@ -101,6 +101,11 @@ type chatUsage struct {
 func chatMessages(messages []llm.Message) ([]chatMessage, error) {
 	out := make([]chatMessage, 0, len(messages))
 	for _, m := range messages {
+		if m.Role == llm.RoleSystem && strings.TrimSpace(textContent(m.Content)) == "" {
+			// empty-content system messages (section patches) carry no
+			// request-side text
+			continue
+		}
 		cm, err := chatMessageFrom(m)
 		if err != nil {
 			return nil, err

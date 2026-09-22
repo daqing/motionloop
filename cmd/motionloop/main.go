@@ -9,8 +9,8 @@ import (
 	"strings"
 
 	"github.com/daqing/motionloop/agent"
+	"github.com/daqing/motionloop/config"
 	"github.com/daqing/motionloop/llm"
-	_ "github.com/daqing/motionloop/llm/provider/openaicompat"
 	"github.com/daqing/motionloop/profile"
 	"github.com/daqing/motionloop/profile/coding"
 	promptpkg "github.com/daqing/motionloop/prompt"
@@ -20,21 +20,22 @@ import (
 // version is overridden at build time via -ldflags "-X main.version=...".
 var version = "0.1.0-dev"
 
-// apiKeyEnv maps provider IDs to their conventional API key variables;
-// MOTIONLOOP_API_KEY works for any provider as a fallback.
-var apiKeyEnv = map[string]string{
-	"openai":   "OPENAI_API_KEY",
-	"deepseek": "DEEPSEEK_API_KEY",
-	"glm":      "GLM_API_KEY",
-}
-
-type modelCatalog interface{ Models() []llm.Model }
-
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "trust", "untrust":
+			if err := runTrust(os.Args[1] == "trust"); err != nil {
+				fmt.Fprintln(os.Stderr, "motionloop:", err)
+				os.Exit(1)
+			}
+			return
+		}
+	}
+
 	promptFlag := flag.String("p", "", "one-shot prompt (non-interactive)")
-	providerID := flag.String("provider", "openai", "provider id")
-	modelID := flag.String("model", "", "model id (defaults to the provider's first catalog entry)")
-	profileName := flag.String("profile", "coding", "agent profile")
+	providerFlag := flag.String("provider", "", "provider id (settings default: openai)")
+	modelFlag := flag.String("model", "", "model id (defaults to the provider's first catalog entry)")
+	profileFlag := flag.String("profile", "", "agent profile (settings default: coding)")
 	systemPromptPath := flag.String("system-prompt", "", "replace the profile's system prompt with this file")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
@@ -45,41 +46,68 @@ func main() {
 	}
 	if *promptFlag == "" {
 		fmt.Fprintln(os.Stderr, "usage: motionloop -p <prompt> [--provider id] [--model id] [--profile name] [--system-prompt file]")
+		fmt.Fprintln(os.Stderr, "       motionloop trust | untrust")
 		fmt.Fprintln(os.Stderr, "       motionloop --version")
 		os.Exit(2)
 	}
 
-	if err := run(context.Background(), *providerID, *modelID, *profileName, *systemPromptPath, *promptFlag); err != nil {
+	if err := run(context.Background(), *providerFlag, *modelFlag, *profileFlag, *systemPromptPath, *promptFlag); err != nil {
 		fmt.Fprintln(os.Stderr, "motionloop:", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, providerID, modelID, profileName, systemPromptPath, prompt string) error {
+func run(ctx context.Context, providerFlag, modelFlag, profileFlag, systemPromptPath, prompt string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+
+	trustStore, err := config.OpenTrustStore(filepath.Join(home, ".motionloop", "trust.json"))
+	if err != nil {
+		return err
+	}
+	trusted := trustStore.Status(cwd)
+	if !trusted {
+		fmt.Fprintln(os.Stderr, "motionloop: project not trusted; project-level config and prompts skipped (run: motionloop trust)")
+	}
+
+	settings, err := config.Load(config.Sources{
+		GlobalDir:  filepath.Join(home, ".motionloop"),
+		ProjectDir: filepath.Join(cwd, ".motionloop"),
+		Trusted:    trusted,
+	})
+	if err != nil {
+		return err
+	}
+	providerID := firstNonEmpty(providerFlag, settings.Provider)
+	modelID := firstNonEmpty(modelFlag, settings.Model)
+	profileName := firstNonEmpty(profileFlag, settings.Profile)
+
 	provider, err := llm.Resolve(providerID)
 	if err != nil {
 		return err
 	}
-	model, err := resolveModel(provider, modelID)
+	catalog, customEnvs, err := config.LoadModels(filepath.Join(home, ".motionloop", "models.json"))
+	if err != nil {
+		return err
+	}
+	model, err := config.ResolveModel(provider, modelID, catalog)
 	if err != nil {
 		return err
 	}
 	fmt.Fprintln(os.Stderr, "motionloop:", model.String())
 
-	opts := llm.StreamOptions{APIKey: os.Getenv("MOTIONLOOP_API_KEY")}
-	if env := apiKeyEnv[providerID]; env != "" && opts.APIKey == "" {
-		opts.APIKey = os.Getenv(env)
-	}
+	opts := llm.StreamOptions{APIKey: config.ResolveAPIKey(providerID, customEnvs[providerID])}
 
-	cwd, err := os.Getwd()
-	if err != nil {
-		return err
-	}
 	ws, err := tools.NewWorkspace(cwd)
 	if err != nil {
 		return err
 	}
-
 	prof, err := lookupProfile(profileName)
 	if err != nil {
 		return err
@@ -94,7 +122,7 @@ func run(ctx context.Context, providerID, modelID, profileName, systemPromptPath
 		options = append(options, agent.WithSystemPrompt(string(content)))
 	} else {
 		sections := prof.Prompt(promptpkg.DetectEnvironment(cwd))
-		if err := applyPromptOverrides(sections, prof.Name, cwd); err != nil {
+		if err := applyPromptOverrides(sections, prof.Name, cwd, trusted); err != nil {
 			return err
 		}
 		options = append(options, agent.WithSystemMessage(sections.ToMessage()))
@@ -110,6 +138,33 @@ func run(ctx context.Context, providerID, modelID, profileName, systemPromptPath
 	return a.Prompt(ctx, prompt)
 }
 
+func runTrust(trust bool) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	store, err := config.OpenTrustStore(filepath.Join(home, ".motionloop", "trust.json"))
+	if err != nil {
+		return err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	if trust {
+		if err := store.Trust(cwd); err != nil {
+			return err
+		}
+		fmt.Printf("trusted %s (project-level config and prompts will load)\n", cwd)
+		return nil
+	}
+	if err := store.Untrust(cwd); err != nil {
+		return err
+	}
+	fmt.Printf("untrusted %s\n", cwd)
+	return nil
+}
+
 func lookupProfile(name string) (profile.Profile, error) {
 	switch name {
 	case "", "coding":
@@ -121,27 +176,27 @@ func lookupProfile(name string) (profile.Profile, error) {
 
 // applyPromptOverrides layers the prompt override chain onto the profile's
 // sections: built-in content, then ~/.motionloop/prompts/<profile>/, then
-// the project's .motionloop/prompts/<profile>/.
-func applyPromptOverrides(sections *promptpkg.Sections, profileName, cwd string) error {
-	if home, err := os.UserHomeDir(); err == nil {
+// the trusted project's .motionloop/prompts/<profile>/.
+func applyPromptOverrides(sections *promptpkg.Sections, profileName, cwd string, trusted bool) error {
+	home, err := os.UserHomeDir()
+	if err == nil {
 		if err := sections.ApplyOverrideDir(filepath.Join(home, ".motionloop", "prompts", profileName)); err != nil {
 			return err
 		}
 	}
-	// TODO(Phase 8): project-level overrides require workspace trust.
+	if !trusted {
+		return nil
+	}
 	return sections.ApplyOverrideDir(filepath.Join(cwd, ".motionloop", "prompts", profileName))
 }
 
-func resolveModel(provider llm.Provider, modelID string) (llm.Model, error) {
-	if modelID == "" {
-		if catalog, ok := provider.(modelCatalog); ok {
-			if models := catalog.Models(); len(models) > 0 {
-				return models[0], nil
-			}
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
 		}
-		return llm.Model{}, fmt.Errorf("provider %q has no default model; pass --model", provider.ID())
 	}
-	return llm.Model{ProviderID: provider.ID(), ModelID: modelID}, nil
+	return ""
 }
 
 // renderEvent prints assistant text to stdout and tool activity to stderr —
