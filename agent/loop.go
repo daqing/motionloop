@@ -48,6 +48,33 @@ func WithThinkingLevel(level llm.ThinkingLevel) Option {
 	return func(a *Agent) { a.thinking = level }
 }
 
+// WithBeforeToolCall installs a per-call gate that may block executions.
+func WithBeforeToolCall(hook BeforeToolCall) Option {
+	return func(a *Agent) { a.beforeToolCall = hook }
+}
+
+// WithAfterToolCall installs a post-execution result rewriter.
+func WithAfterToolCall(hook AfterToolCall) Option {
+	return func(a *Agent) { a.afterToolCall = hook }
+}
+
+// WithFinishTurn installs a per-turn scheduling decision hook.
+func WithFinishTurn(hook FinishTurn) Option {
+	return func(a *Agent) { a.finishTurn = hook }
+}
+
+// WithTransformContext installs a transcript transform applied before
+// every provider request.
+func WithTransformContext(hook TransformContext) Option {
+	return func(a *Agent) { a.transformContext = hook }
+}
+
+// WithConvertToLLM installs the final message filter applied after
+// TransformContext.
+func WithConvertToLLM(hook ConvertToLLM) Option {
+	return func(a *Agent) { a.convertToLLM = hook }
+}
+
 // Agent runs the LLM-to-tool loop against one provider and model. A Prompt
 // call streams one assistant response, executes requested tools in
 // assistant source order, and continues until the assistant stops calling
@@ -61,6 +88,12 @@ type Agent struct {
 	tools        []Tool
 	systemPrompt string
 	systemMsg    *llm.Message
+
+	beforeToolCall   BeforeToolCall
+	afterToolCall    AfterToolCall
+	finishTurn       FinishTurn
+	transformContext TransformContext
+	convertToLLM     ConvertToLLM
 
 	mu       sync.Mutex
 	messages []llm.Message
@@ -141,10 +174,22 @@ func (a *Agent) Prompt(ctx context.Context, input string) error {
 			return err
 		}
 
-		results, terminate := a.executeTools(ctx, assistant)
+		results, allTerminate := a.executeTools(ctx, assistant)
+
+		decision := DecisionDefault
+		if a.finishTurn != nil {
+			decision = a.finishTurn(ctx, Turn{Message: assistant, ToolResults: results})
+		}
 		a.emit(TurnEnd{Message: assistant, ToolResults: results})
-		if len(results) == 0 || terminate {
+		switch {
+		case allTerminate || decision == DecisionEnd:
 			return nil
+		case decision == DecisionContinue:
+			continue
+		default:
+			if len(results) == 0 {
+				return nil
+			}
 		}
 	}
 }
@@ -156,6 +201,12 @@ func (a *Agent) streamAssistant(ctx context.Context) (llm.Message, error) {
 	opts.ThinkingLevel = a.thinking
 	opts.Tools = a.toolDecls()
 	a.mu.Unlock()
+	if a.transformContext != nil {
+		msgs = a.transformContext(ctx, msgs)
+	}
+	if a.convertToLLM != nil {
+		msgs = a.convertToLLM(msgs)
+	}
 
 	assistant := llm.Message{
 		Role:      llm.RoleAssistant,
@@ -270,12 +321,43 @@ func (a *Agent) runTool(ctx context.Context, tc llm.ToolCallBlock) (Result, bool
 	}
 
 	call := ToolCall{ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments}
+	if a.beforeToolCall != nil {
+		verdict := a.beforeToolCall(ctx, call)
+		if verdict.Block {
+			reason := verdict.Reason
+			if reason == "" {
+				reason = "tool call blocked"
+			}
+			res := Result{
+				Content:   []llm.ContentBlock{llm.TextBlock{Text: reason}},
+				Terminate: verdict.Terminate,
+			}
+			a.emit(ToolExecutionEnd{ToolCallID: tc.ID, ToolName: tc.Name, Result: res, IsError: true})
+			return res, true
+		}
+	}
+
 	res, err := tool.Execute(ctx, call, func(u Update) {
 		a.emit(ToolExecutionUpdate{ToolCallID: tc.ID, ToolName: tc.Name, Update: u})
 	})
 	isErr := err != nil
 	if isErr {
 		res = ErrorResult(err)
+	}
+	if a.afterToolCall != nil {
+		override := a.afterToolCall(ctx, call, res, isErr)
+		if override.Content != nil {
+			res.Content = override.Content
+		}
+		if override.Details != nil {
+			res.Details = override.Details
+		}
+		if override.IsError != nil {
+			isErr = *override.IsError
+		}
+		if override.Terminate != nil {
+			res.Terminate = *override.Terminate
+		}
 	}
 	a.emit(ToolExecutionEnd{ToolCallID: tc.ID, ToolName: tc.Name, Result: res, IsError: isErr})
 	return res, isErr
