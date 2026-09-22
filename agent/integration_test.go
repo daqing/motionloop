@@ -59,8 +59,12 @@ func TestLoopWithRealProviderAndTools(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	p := openaicompat.New("itest", srv.URL, nil)
+	ws, err := tools.NewWorkspace(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	a := agent.New(p, llm.Model{ProviderID: "itest", ModelID: "itest-model"},
-		agent.WithTools(tools.Read{Root: dir}),
+		agent.WithTools(tools.Read{WS: ws}),
 		agent.WithSystemPrompt("be terse"),
 	)
 

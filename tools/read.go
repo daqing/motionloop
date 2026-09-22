@@ -18,10 +18,7 @@ const defaultReadLines = 2000
 
 // Read returns line-numbered file contents, or an image block for known
 // image types.
-type Read struct {
-	// Root is the workspace root; relative paths resolve against it.
-	Root string
-}
+type Read struct{ WS *Workspace }
 
 type readParams struct {
 	Path   string `json:"path" jsonschema:"required,description=File path, relative to the workspace root"`
@@ -59,21 +56,22 @@ func (Read) Parameters() *agent.Schema {
 }
 
 // Execute implements agent.Tool.
-func (r Read) Execute(ctx context.Context, call agent.ToolCall, emit func(agent.Update)) (agent.Result, error) {
+func (t Read) Execute(ctx context.Context, call agent.ToolCall, emit func(agent.Update)) (agent.Result, error) {
 	var p readParams
 	if len(call.Arguments) > 0 {
 		if err := json.Unmarshal(call.Arguments, &p); err != nil {
 			return agent.Result{}, fmt.Errorf("parse arguments: %w", err)
 		}
 	}
-	path := p.Path
-	if !filepath.IsAbs(path) && r.Root != "" {
-		path = filepath.Join(r.Root, path)
+	path, err := t.WS.resolve(p.Path)
+	if err != nil {
+		return agent.Result{}, err
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return agent.Result{}, fmt.Errorf("read %s: %w", p.Path, err)
 	}
+	t.WS.markRead(path)
 
 	if mime, ok := imageTypes[strings.ToLower(filepath.Ext(path))]; ok {
 		return agent.Result{

@@ -73,8 +73,12 @@ func run(ctx context.Context, providerID, modelID, prompt string) error {
 	if err != nil {
 		return err
 	}
+	ws, err := tools.NewWorkspace(cwd)
+	if err != nil {
+		return err
+	}
 	a := agent.New(provider, model,
-		agent.WithTools(tools.Bash{}, tools.Read{Root: cwd}),
+		agent.WithTools(tools.Coding(ws)...),
 		agent.WithSystemPrompt(defaultSystemPrompt),
 		agent.WithStreamOptions(opts),
 	)

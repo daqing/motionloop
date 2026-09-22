@@ -75,12 +75,7 @@ func (Bash) Execute(ctx context.Context, call agent.ToolCall, emit func(agent.Up
 	if ee, ok := err.(*exec.ExitError); ok {
 		exitCode = ee.ExitCode()
 	}
-	output := string(out)
-	truncated := false
-	if len(output) > bashMaxOutput {
-		output = output[:bashMaxOutput] + "\n... [output truncated]"
-		truncated = true
-	}
+	output, truncated := truncateOutput(string(out), bashMaxOutput)
 	var sb strings.Builder
 	sb.WriteString(output)
 	if runCtx.Err() == context.DeadlineExceeded {

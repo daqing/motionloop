@@ -15,7 +15,11 @@ import (
 
 func readWith(t *testing.T, root, args string) agent.Result {
 	t.Helper()
-	res, err := Read{Root: root}.Execute(context.Background(),
+	ws, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Read{WS: ws}.Execute(context.Background(),
 		agent.ToolCall{ID: "c1", Name: "read", Arguments: json.RawMessage(args)}, func(agent.Update) {})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -76,7 +80,11 @@ func TestReadOffsetPastEnd(t *testing.T) {
 }
 
 func TestReadMissingFile(t *testing.T) {
-	_, err := Read{Root: t.TempDir()}.Execute(context.Background(),
+	ws, err := NewWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Read{WS: ws}.Execute(context.Background(),
 		agent.ToolCall{ID: "c", Name: "read", Arguments: json.RawMessage(`{"path":"nope.txt"}`)}, func(agent.Update) {})
 	if err == nil || !strings.Contains(err.Error(), "nope.txt") {
 		t.Fatalf("err = %v", err)
