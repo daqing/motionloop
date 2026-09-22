@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +36,13 @@ func WithTools(tools ...Tool) Option {
 // transcript is empty.
 func WithSystemPrompt(prompt string) Option {
 	return func(a *Agent) { a.systemPrompt = prompt }
+}
+
+// WithSystemMessage seeds the leading system message verbatim — sections
+// and all. It is the profile and session-resume integration point and
+// takes precedence over WithSystemPrompt.
+func WithSystemMessage(msg llm.Message) Option {
+	return func(a *Agent) { a.systemMsg = &msg }
 }
 
 // WithMessages seeds the transcript.
@@ -200,14 +208,19 @@ func (a *Agent) Prompt(ctx context.Context, input string) error {
 	defer a.endRun()
 
 	a.mu.Lock()
-	if len(a.messages) == 0 && a.systemPrompt != "" {
-		msg := llm.Message{
-			Role:      llm.RoleSystem,
-			Content:   []llm.ContentBlock{llm.TextBlock{Text: a.systemPrompt}},
-			Timestamp: now(),
+	if len(a.messages) == 0 {
+		switch {
+		case a.systemMsg != nil:
+			a.messages = append(a.messages, *a.systemMsg)
+		case a.systemPrompt != "":
+			msg := llm.Message{
+				Role:      llm.RoleSystem,
+				Content:   []llm.ContentBlock{llm.TextBlock{Text: a.systemPrompt}},
+				Timestamp: now(),
+			}
+			a.messages = append(a.messages, msg)
+			a.systemMsg = &msg
 		}
-		a.messages = append(a.messages, msg)
-		a.systemMsg = &msg
 	}
 	a.mu.Unlock()
 
@@ -218,6 +231,77 @@ func (a *Agent) Prompt(ctx context.Context, input string) error {
 	}
 	a.appendMessage(userMsg)
 	return a.loop(ctx, &userMsg)
+}
+
+// PatchPrompt appends a system message carrying section patches between
+// runs; session replay folds it into the prompt state. An empty value
+// removes the section.
+func (a *Agent) PatchPrompt(sections map[string]string) error {
+	if !a.beginRun() {
+		return ErrRunInProgress
+	}
+	defer a.endRun()
+	msg := llm.Message{
+		Role:      llm.RoleSystem,
+		Sections:  sections,
+		Timestamp: now(),
+	}
+	a.emit(MessageStart{Message: msg})
+	a.appendMessage(msg)
+	a.emit(MessageEnd{Message: msg})
+	return nil
+}
+
+// SetTools replaces the tool loadout between runs and records the diff as
+// a system message (toolsAdded/toolsRemoved) so sessions replay the
+// loadout.
+func (a *Agent) SetTools(tools ...Tool) error {
+	if !a.beginRun() {
+		return ErrRunInProgress
+	}
+	defer a.endRun()
+
+	a.mu.Lock()
+	old := map[string]bool{}
+	for _, t := range a.tools {
+		old[t.Name()] = true
+	}
+	newSet := map[string]Tool{}
+	newNames := map[string]bool{}
+	for _, t := range tools {
+		newSet[t.Name()] = t
+		newNames[t.Name()] = true
+	}
+	var added []llm.ToolDecl
+	for _, t := range tools {
+		if !old[t.Name()] {
+			added = append(added, llm.ToolDecl{Name: t.Name(), Description: t.Description()})
+		}
+	}
+	var removed []string
+	for name := range old {
+		if !newNames[name] {
+			removed = append(removed, name)
+		}
+	}
+	sort.Strings(removed)
+	a.tools = tools
+	a.toolset = newSet
+	a.mu.Unlock()
+
+	if len(added) == 0 && len(removed) == 0 {
+		return nil
+	}
+	msg := llm.Message{
+		Role:         llm.RoleSystem,
+		ToolsAdded:   added,
+		ToolsRemoved: removed,
+		Timestamp:    now(),
+	}
+	a.emit(MessageStart{Message: msg})
+	a.appendMessage(msg)
+	a.emit(MessageEnd{Message: msg})
+	return nil
 }
 
 func (a *Agent) loop(ctx context.Context, firstPending *llm.Message) error {

@@ -5,20 +5,20 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/daqing/motionloop/agent"
 	"github.com/daqing/motionloop/llm"
 	_ "github.com/daqing/motionloop/llm/provider/openaicompat"
+	"github.com/daqing/motionloop/profile"
+	"github.com/daqing/motionloop/profile/coding"
+	promptpkg "github.com/daqing/motionloop/prompt"
 	"github.com/daqing/motionloop/tools"
 )
 
 // version is overridden at build time via -ldflags "-X main.version=...".
 var version = "0.1.0-dev"
-
-const defaultSystemPrompt = `You are motionloop, a coding agent.
-Inspect files with the read tool and run commands with bash before answering.
-Keep answers concise.`
 
 // apiKeyEnv maps provider IDs to their conventional API key variables;
 // MOTIONLOOP_API_KEY works for any provider as a fallback.
@@ -31,9 +31,11 @@ var apiKeyEnv = map[string]string{
 type modelCatalog interface{ Models() []llm.Model }
 
 func main() {
-	prompt := flag.String("p", "", "one-shot prompt (non-interactive)")
+	promptFlag := flag.String("p", "", "one-shot prompt (non-interactive)")
 	providerID := flag.String("provider", "openai", "provider id")
 	modelID := flag.String("model", "", "model id (defaults to the provider's first catalog entry)")
+	profileName := flag.String("profile", "coding", "agent profile")
+	systemPromptPath := flag.String("system-prompt", "", "replace the profile's system prompt with this file")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
@@ -41,19 +43,19 @@ func main() {
 		fmt.Println("motionloop " + version)
 		return
 	}
-	if *prompt == "" {
-		fmt.Fprintln(os.Stderr, "usage: motionloop -p <prompt> [--provider id] [--model id]")
+	if *promptFlag == "" {
+		fmt.Fprintln(os.Stderr, "usage: motionloop -p <prompt> [--provider id] [--model id] [--profile name] [--system-prompt file]")
 		fmt.Fprintln(os.Stderr, "       motionloop --version")
 		os.Exit(2)
 	}
 
-	if err := run(context.Background(), *providerID, *modelID, *prompt); err != nil {
+	if err := run(context.Background(), *providerID, *modelID, *profileName, *systemPromptPath, *promptFlag); err != nil {
 		fmt.Fprintln(os.Stderr, "motionloop:", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, providerID, modelID, prompt string) error {
+func run(ctx context.Context, providerID, modelID, profileName, systemPromptPath, prompt string) error {
 	provider, err := llm.Resolve(providerID)
 	if err != nil {
 		return err
@@ -77,13 +79,57 @@ func run(ctx context.Context, providerID, modelID, prompt string) error {
 	if err != nil {
 		return err
 	}
-	a := agent.New(provider, model,
-		agent.WithTools(tools.Coding(ws)...),
-		agent.WithSystemPrompt(defaultSystemPrompt),
+
+	prof, err := lookupProfile(profileName)
+	if err != nil {
+		return err
+	}
+
+	var options []agent.Option
+	if systemPromptPath != "" {
+		content, err := os.ReadFile(systemPromptPath)
+		if err != nil {
+			return fmt.Errorf("read system prompt: %w", err)
+		}
+		options = append(options, agent.WithSystemPrompt(string(content)))
+	} else {
+		sections := prof.Prompt(promptpkg.DetectEnvironment(cwd))
+		if err := applyPromptOverrides(sections, prof.Name, cwd); err != nil {
+			return err
+		}
+		options = append(options, agent.WithSystemMessage(sections.ToMessage()))
+	}
+	options = append(options,
+		agent.WithTools(prof.Tools(ws)...),
+		agent.WithThinkingLevel(prof.ThinkingLevel),
 		agent.WithStreamOptions(opts),
 	)
+
+	a := agent.New(provider, model, options...)
 	a.Subscribe(renderEvent)
 	return a.Prompt(ctx, prompt)
+}
+
+func lookupProfile(name string) (profile.Profile, error) {
+	switch name {
+	case "", "coding":
+		return coding.Profile, nil
+	default:
+		return profile.Profile{}, fmt.Errorf("unknown profile %q (available: coding)", name)
+	}
+}
+
+// applyPromptOverrides layers the prompt override chain onto the profile's
+// sections: built-in content, then ~/.motionloop/prompts/<profile>/, then
+// the project's .motionloop/prompts/<profile>/.
+func applyPromptOverrides(sections *promptpkg.Sections, profileName, cwd string) error {
+	if home, err := os.UserHomeDir(); err == nil {
+		if err := sections.ApplyOverrideDir(filepath.Join(home, ".motionloop", "prompts", profileName)); err != nil {
+			return err
+		}
+	}
+	// TODO(Phase 8): project-level overrides require workspace trust.
+	return sections.ApplyOverrideDir(filepath.Join(cwd, ".motionloop", "prompts", profileName))
 }
 
 func resolveModel(provider llm.Provider, modelID string) (llm.Model, error) {

@@ -5,7 +5,7 @@ import "github.com/daqing/motionloop/agent"
 // Coding returns the full built-in tool loadout for coding agents.
 func Coding(ws *Workspace) []agent.Tool {
 	return []agent.Tool{
-		Bash{},
+		Bash{Dir: ws.Root},
 		Read{WS: ws},
 		Write{WS: ws},
 		Edit{WS: ws},
@@ -18,7 +18,7 @@ func Coding(ws *Workspace) []agent.Tool {
 // Minimal returns the minimal loadout: bash, read, write.
 func Minimal(ws *Workspace) []agent.Tool {
 	return []agent.Tool{
-		Bash{},
+		Bash{Dir: ws.Root},
 		Read{WS: ws},
 		Write{WS: ws},
 	}

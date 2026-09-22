@@ -14,8 +14,12 @@ import (
 	"github.com/daqing/motionloop/llm"
 )
 
-// Bash executes shell commands and returns their combined output.
-type Bash struct{}
+// Bash executes shell commands and returns their combined output. It is
+// not path-restricted; Dir only sets the default working directory.
+type Bash struct {
+	// Dir is the default working directory, empty meaning the process cwd.
+	Dir string
+}
 
 type bashParams struct {
 	Command string `json:"command" jsonschema:"required,description=Shell command to execute"`
@@ -46,7 +50,7 @@ func (Bash) Parameters() *agent.Schema {
 }
 
 // Execute implements agent.Tool.
-func (Bash) Execute(ctx context.Context, call agent.ToolCall, emit func(agent.Update)) (agent.Result, error) {
+func (t Bash) Execute(ctx context.Context, call agent.ToolCall, emit func(agent.Update)) (agent.Result, error) {
 	var p bashParams
 	if len(call.Arguments) > 0 {
 		if err := json.Unmarshal(call.Arguments, &p); err != nil {
@@ -61,8 +65,11 @@ func (Bash) Execute(ctx context.Context, call agent.ToolCall, emit func(agent.Up
 	defer cancel()
 
 	cmd := exec.CommandContext(runCtx, "bash", "-c", p.Command)
-	if p.Workdir != "" {
+	switch {
+	case p.Workdir != "":
 		cmd.Dir = p.Workdir
+	case t.Dir != "":
+		cmd.Dir = t.Dir
 	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
