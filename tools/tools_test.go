@@ -414,8 +414,7 @@ func TestWriteEditSequentialMode(t *testing.T) {
 
 func TestPresets(t *testing.T) {
 	ws := testWorkspace(t)
-	var names func([]agent.Tool) []string
-	names = func(ts []agent.Tool) []string {
+	names := func(ts []agent.Tool) []string {
 		out := make([]string, len(ts))
 		for i, t := range ts {
 			out[i] = t.Name()

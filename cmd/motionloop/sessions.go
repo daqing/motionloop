@@ -180,7 +180,7 @@ func resumeSession(root, id, providerFlag, modelFlag, profileFlag, prompt string
 	if err != nil {
 		return err
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 
 	// a recorded model_change overrides flags-that-were-not-given
 	if state.Model != nil {
@@ -191,7 +191,7 @@ func resumeSession(root, id, providerFlag, modelFlag, profileFlag, prompt string
 	if err != nil {
 		return err
 	}
-	options, err := app.buildOptions("", state.Messages, sess)
+	options, _, err := app.buildOptions("", state.Messages, sess)
 	if err != nil {
 		return err
 	}

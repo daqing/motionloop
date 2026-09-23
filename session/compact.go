@@ -140,13 +140,22 @@ type Compactor struct {
 
 // Transform implements the agent.TransformContext hook.
 func (c *Compactor) Transform(ctx context.Context, messages []llm.Message) []llm.Message {
+	return c.transform(ctx, messages, false)
+}
+
+// Force compacts regardless of the threshold — the manual /compact path.
+func (c *Compactor) Force(ctx context.Context, messages []llm.Message) []llm.Message {
+	return c.transform(ctx, messages, true)
+}
+
+func (c *Compactor) transform(ctx context.Context, messages []llm.Message, force bool) []llm.Message {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.Threshold < 0 {
+	if c.Threshold < 0 && !force {
 		return messages
 	}
 	view := compactedView(messages, c.summary, c.summarizedCount)
-	if c.estimator().Estimate(view) <= c.threshold() {
+	if !force && c.estimator().Estimate(view) <= c.threshold() {
 		return view
 	}
 	span := c.agedSpan(messages)

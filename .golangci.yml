@@ -1,0 +1,10 @@
+version: "2"
+
+linters:
+  default: standard
+  exclusions:
+    rules:
+      # test code routinely ignores Close/Write returns on scratch files
+      - path: _test\.go
+        linters:
+          - errcheck

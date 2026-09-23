@@ -21,7 +21,7 @@ import (
 )
 
 // version is overridden at build time via -ldflags "-X main.version=...".
-var version = "0.1.0-dev"
+var version = "0.1.0"
 
 func main() {
 	if len(os.Args) > 1 {
@@ -41,11 +41,12 @@ func main() {
 		}
 	}
 
-	promptFlag := flag.String("p", "", "one-shot prompt (non-interactive)")
+	promptFlag := flag.String("p", "", "one-shot prompt (non-interactive); without it an interactive REPL starts")
 	providerFlag := flag.String("provider", "", "provider id (settings default: openai)")
 	modelFlag := flag.String("model", "", "model id (defaults to the provider's first catalog entry)")
 	profileFlag := flag.String("profile", "", "agent profile (settings default: coding)")
 	systemPromptPath := flag.String("system-prompt", "", "replace the profile's system prompt with this file")
+	headless := flag.Bool("headless", false, "emit one JSON event per line on stdout instead of the line renderer")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
@@ -53,21 +54,22 @@ func main() {
 		fmt.Println("motionloop " + version)
 		return
 	}
+
 	if *promptFlag == "" {
-		fmt.Fprintln(os.Stderr, "usage: motionloop -p <prompt> [--provider id] [--model id] [--profile name] [--system-prompt file]")
-		fmt.Fprintln(os.Stderr, "       motionloop session ls | show <id> | fork <id> | resume <id> -p <prompt>")
-		fmt.Fprintln(os.Stderr, "       motionloop trust | untrust")
-		fmt.Fprintln(os.Stderr, "       motionloop --version")
-		os.Exit(2)
+		if err := runREPL(context.Background(), *providerFlag, *modelFlag, *profileFlag); err != nil {
+			fmt.Fprintln(os.Stderr, "motionloop:", err)
+			os.Exit(1)
+		}
+		return
 	}
 
-	if err := run(context.Background(), *providerFlag, *modelFlag, *profileFlag, *systemPromptPath, *promptFlag); err != nil {
+	if err := run(context.Background(), *providerFlag, *modelFlag, *profileFlag, *systemPromptPath, *promptFlag, *headless); err != nil {
 		fmt.Fprintln(os.Stderr, "motionloop:", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, providerFlag, modelFlag, profileFlag, systemPromptPath, prompt string) error {
+func run(ctx context.Context, providerFlag, modelFlag, profileFlag, systemPromptPath, prompt string, headless bool) error {
 	app, err := prepare(providerFlag, modelFlag, profileFlag)
 	if err != nil {
 		return err
@@ -78,16 +80,20 @@ func run(ctx context.Context, providerFlag, modelFlag, profileFlag, systemPrompt
 	if err != nil {
 		return err
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 
-	options, err := app.buildOptions(systemPromptPath, nil, sess)
+	options, _, err := app.buildOptions(systemPromptPath, nil, sess)
 	if err != nil {
 		return err
 	}
 	a := agent.New(app.provider, app.model, options...)
 	rec := session.NewRecorder(sess)
 	a.Subscribe(rec.Handle)
-	a.Subscribe(renderEvent)
+	if headless {
+		a.Subscribe(renderHeadlessEvent)
+	} else {
+		a.Subscribe(renderEvent)
+	}
 	if err := a.Prompt(ctx, prompt); err != nil {
 		return err
 	}
@@ -135,6 +141,9 @@ type app struct {
 	provider   llm.Provider
 	model      llm.Model
 	streamOpts llm.StreamOptions
+	providerID string
+	catalog    *llm.Catalog
+	customEnvs config.CustomEnvs
 }
 
 // prepare resolves configuration, provider, model, and profile. Empty
@@ -200,14 +209,17 @@ func prepare(providerFlag, modelFlag, profileFlag string) (*app, error) {
 		provider:   provider,
 		model:      model,
 		streamOpts: llm.StreamOptions{APIKey: config.ResolveAPIKey(providerID, customEnvs[providerID])},
+		providerID: providerID,
+		catalog:    catalog,
+		customEnvs: customEnvs,
 	}, nil
 }
 
 // buildOptions assembles the agent options: system message (or the
 // --system-prompt replacement), tool loadout, skills and memory sections,
 // an optional replayed transcript seed, recording-driven compaction, and
-// base stream options.
-func (a *app) buildOptions(systemPromptPath string, seed []llm.Message, sess *session.Session) ([]agent.Option, error) {
+// base stream options. It also returns the compactor when one is wired.
+func (a *app) buildOptions(systemPromptPath string, seed []llm.Message, sess *session.Session) ([]agent.Option, *session.Compactor, error) {
 	var options []agent.Option
 	if len(seed) > 0 {
 		options = append(options, agent.WithMessages(seed...))
@@ -217,18 +229,18 @@ func (a *app) buildOptions(systemPromptPath string, seed []llm.Message, sess *se
 	if systemPromptPath != "" {
 		content, err := os.ReadFile(systemPromptPath)
 		if err != nil {
-			return nil, fmt.Errorf("read system prompt: %w", err)
+			return nil, nil, fmt.Errorf("read system prompt: %w", err)
 		}
 		options = append(options, agent.WithSystemPrompt(string(content)))
 	} else {
 		sections := a.prof.Prompt(promptpkg.DetectEnvironment(a.cwd))
 		if err := applyPromptOverrides(sections, a.prof.Name, a.cwd, a.trusted); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		skillList, warns, err := skills.Discover(skills.DefaultDirs(a.home, a.cwd, a.trusted))
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for _, w := range warns {
 			fmt.Fprintln(os.Stderr, "motionloop: skill:", w)
@@ -255,8 +267,9 @@ func (a *app) buildOptions(systemPromptPath string, seed []llm.Message, sess *se
 		agent.WithStreamOptions(a.streamOpts),
 	)
 
+	var compactor *session.Compactor
 	if sess != nil && a.settings.CompactionThreshold >= 0 {
-		compactor := &session.Compactor{
+		compactor = &session.Compactor{
 			Sess:      sess,
 			Provider:  a.provider,
 			Model:     a.model,
@@ -265,7 +278,7 @@ func (a *app) buildOptions(systemPromptPath string, seed []llm.Message, sess *se
 		}
 		options = append(options, agent.WithTransformContext(compactor.Transform))
 	}
-	return options, nil
+	return options, compactor, nil
 }
 
 func lookupProfile(name string) (profile.Profile, error) {

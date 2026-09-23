@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"sort"
 
 	"github.com/daqing/motionloop/llm"
 )
@@ -210,14 +209,4 @@ func removeString(list []string, s string) []string {
 		}
 	}
 	return out
-}
-
-// sortedSectionKeys is a test helper giving deterministic section order.
-func sortedSectionKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }

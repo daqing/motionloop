@@ -1,6 +1,6 @@
 # Phase 11：REPL、headless、文档与 CI（M5 / v0.1 发布）
 
-> 里程碑：M5（**v0.1 发布**）｜ 前置：Phase 10 ｜ 状态：未开始
+> 里程碑：M5（**v0.1 发布**）｜ 前置：Phase 10 ｜ 状态：已完成（2026-09-23，v0.1.0 tag 随本提交创建）
 
 ## 目标
 
@@ -8,18 +8,18 @@
 
 ## 任务清单
 
-- [ ] 交互 REPL：
-  - readline 输入（纯 Go 轻量实现，不引 bubbletea——Q3 已决策 TUI 暂不规划）
-  - 流式文本输出、工具执行实时展示（bash 命令 + 摘要输出、edit 的 diff）
-  - 最小指令：`/exit`、`/model`、`/compact`、`/fork`
-  - Ctrl+C 一次中断当前 run、两次退出（ctx 取消语义的 UI 呈现）
-- [ ] `--headless`：stdout JSON 事件流（每行一个事件，字段对齐 agent 事件类型），供程序包装——这是 motionloop 作为"通用框架 + 可嵌入 CLI"的交付面
-- [ ] 文档：
-  - `README.md`（英文：定位、安装、5 分钟库使用示例、CLI 用法、自定义 provider / 提示词 / skills）+ `README.zh-CN.md` 同步对应
-  - 公开包 `doc.go` 与 `example_test.go`（`go doc` 可读、示例可复制运行）
-- [ ] CI（GitHub Actions）：`gofmt` 检查、`golangci-lint`（vet + staticcheck）、`go test -race ./...`；e2e 标签默认跳过（`MOTIONLOOP_E2E=1` 才跑）
-- [ ] `LICENSE`（MIT）、`CHANGELOG.md` 起步
-- [ ] 收尾核对：PLAN §12 M0–M5 验收清单逐项打勾，打 `v0.1` tag
+- [x] 交互 REPL（`cmd/motionloop/repl.go`）：
+  - 行式输入（bufio + `» ` 提示符，纯标准库）
+  - 复用 renderEvent 流式渲染（文本 stdout、工具活动 stderr、usage 汇总）
+  - 指令：`/exit` `/quit` `/help` `/model [provider/]model`（agent 新增 `SetProvider/SetModel/SetStreamOptions` + `AppendModelChange` 落盘）、`/compact`（Compactor 新增 `Force`）、`/fork`
+  - Ctrl+C：run 中→取消当前 run 并等待收尾，空闲→提示后第二次退出；run 中的输入进 `Steer()`（Phase 4 能力首次产品化）
+- [x] `--headless`（`cmd/motionloop/headless.go`）：stdout 每行一个 JSON 事件（type/role/text/delta/tool/…），与 REPL 共用同一事件流——只是另一种渲染器
+- [x] 文档：
+  - `README.md` 重写（定位、安装、**5 分钟库使用示例**（框架优先）、CLI 全量用法、配置四件套 settings/models.json/prompts/skills+memory、包结构、状态）+ `README.zh-CN.md` 逐节对应
+  - `agent/example_test.go`（Output 验证的最小 agent + 自定义工具）、`session/example_test.go`（录制→重放，编译型）；全部公开包均有包注释
+- [x] CI（`.github/workflows/ci.yml` + `.golangci.yml` v2 配置）：gofmt 检查、`go vet`、golangci-lint（默认集：errcheck/staticcheck/unused/ineffassign…）、`go test -race ./...`；**本地预跑全绿**
+- [x] `LICENSE`（MIT）、`CHANGELOG.md`（v0.1.0 全量条目）
+- [x] 收尾核对：PLAN §12 M0–M5 逐项打 ✅（含各阶段验收证据索引）；版本号 `0.1.0-dev` → `0.1.0`；`v0.1.0` tag 随提交打上
 
 ## 设计要点
 
@@ -36,6 +36,15 @@
 
 ```bash
 test -z "$(gofmt -l .)" && go vet ./... && go test -race ./... && golangci-lint run
-go run ./cmd/motionloop            # REPL
+printf "/help\n/exit\n" | go run ./cmd/motionloop
 echo "hi" | go run ./cmd/motionloop --headless -p "hi"
 ```
+
+## 实施备注（2026-09-23）
+
+- **冒烟证据**：REPL 管道（`/help`+`/exit`、无 key 提示词→run 失败→继续循环→`/exit`）与 headless（JSON 事件流含真实 skills 索引注入、error stopReason、agent_end）均以真实二进制验证。
+- **steering 首次产品化**：REPL 在 run 进行中把输入交给 `Steer()`——Phase 4 的队列能力第一次有了用户入口。
+- **`/model` 联动**：切换即 `SetProvider+SetModel+SetStreamOptions`（重解析 key）并落 `model_change`，resume 按记录恢复。
+- **golangci-lint v2 配置坑**：`issues.exclude-rules` 在 v2 移到 `linters.exclusions.rules`；测试代码的 errcheck 豁免由此配置（临时文件 Close/Write 忽略是测试惯例）。修掉的非测试问题：两处 `defer Body.Close` 显式忽略、edit.go 无效赋值、两处未使用函数删除。
+- **lint 修复顺带删除**：`Workspace.rel` 与 `sortedSectionKeys`（未使用）；session 示例采用编译型（无 Output 注释不执行），避免示例测试产生文件写入。
+- CI 在 GitHub Actions 首跑前无法远程验证，但四个门（gofmt/vet/lint/race test）均已在本地以相同工具链跑绿。

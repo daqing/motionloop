@@ -256,12 +256,12 @@ motionloop --profile coding --system-prompt ./my-prompt.md
 
 | 里程碑 | 内容 | 验收标准 |
 |---|---|---|
-| **M0 骨架 + 最小回路** | `llm` 消息模型与 StreamEvent；`openaicompat` provider；`agent` 最小 loop（串行工具）；`tools` 先只有 bash/read | `go run ./cmd/motionloop -p "..."` 在测试端点上完成一次"读文件→回答"；fake provider 单测覆盖 loop 状态机 |
-| **M1 agent core 完整** | 事件系统、hooks（before/afterToolCall、transformContext、finishTurn）、并行工具执行、steering；session JSONL：pi 式 entry schema（header/树/重放），写/重放/resume/fork | 事件序列单测对齐 pi 的事件顺序；kill 进程后 resume 恢复对话；fork 分支后两条支线独立演进、各自重放的提示词与工具状态正确 |
-| **M2 工具集 + 提示词体系** | 7 工具齐 + 输出约定；prompt 模板/分区/动态注入；`profile/coding` | 用 coding profile 端到端完成一次真实小任务（读代码→改→跑测试）；工具单测含截断/路径边界 |
-| **M3 provider 矩阵 + 配置** | `anthropic` provider；models.json 自定义 provider；settings 三级合并；project trust | 双 provider 各跑通 e2e；仅靠 models.json 接入一个第三方 OpenAI 兼容端点 |
-| **M4 skills + memory + compaction** | skills 发现/索引/加载；memory 子系统与工具；上下文 compaction | 加载一组现有 `~/.agents/skills`；长会话触发 compaction 后可继续 |
-| **M5 打磨 + v0.1** | REPL 交互细节、headless JSON 流、README（英/中）、CI | 发布 v0.1 tag |
+| **M0 骨架 + 最小回路** ✅ | `llm` 消息模型与 StreamEvent；`openaicompat` provider；`agent` 最小 loop（串行工具）；`tools` 先只有 bash/read | ✅（Phase 2；loop 五场景 + 真 provider/真工具集成测试覆盖"读文件→回答"；真实端点版待带 key 复验） |
+| **M1 agent core 完整** ✅ | 事件系统、hooks（before/afterToolCall、transformContext、finishTurn）、并行工具执行、steering；session JSONL：pi 式 entry schema（header/树/重放），写/重放/resume/fork | ✅（Phase 3–5；事件 golden 对齐 pi、kill-resume 与 fork 独立演进均测试锁定） |
+| **M2 工具集 + 提示词体系** ✅ | 7 工具齐 + 输出约定；prompt 模板/分区/动态注入；`profile/coding` | ✅（Phase 6–7；coding profile e2e：read→edit→bash 验证→汇报；截断/路径边界单测齐） |
+| **M3 provider 矩阵 + 配置** ✅ | `anthropic` provider；models.json 自定义 provider；settings 三级合并；project trust | ✅（Phase 8；anthropic loop e2e + models.json 第三方端点 e2e + trust 状态机测试） |
+| **M4 skills + memory + compaction** ✅ | skills 发现/索引/加载；memory 子系统与工具；上下文 compaction | ✅（Phase 9–10；本机真实 ~/.agents/skills 25 个发现可读；compaction 重放视图 == 请求视图） |
+| **M5 打磨 + v0.1** ✅ | REPL 交互细节、headless JSON 流、README（英/中）、CI | ✅（Phase 11；gofmt/vet/golangci-lint/test -race 全绿，双语 README + example，v0.1.0 发布） |
 
 ## 13. 测试策略
 

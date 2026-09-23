@@ -82,7 +82,7 @@ func (p *Provider) Stream(ctx context.Context, model llm.Model, messages []llm.M
 			send(ctx, ch, p.errStop(ctx, "request failed: %v", err))
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			send(ctx, ch, p.httpError(resp))
 			return

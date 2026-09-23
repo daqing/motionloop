@@ -284,14 +284,15 @@ func TestTransformContextAndConvertToLLM(t *testing.T) {
 
 func TestHookContextCarriesCancellation(t *testing.T) {
 	fake := NewFakeProvider(FakeTextEvents("ok"))
+	type ctxKey string
 	var sawCancel bool
 	a := New(fake, llm.Model{ProviderID: "fake", ModelID: "test"},
 		WithFinishTurn(func(ctx context.Context, turn Turn) TurnDecision {
-			sawCancel = ctx.Value("marker") == "yes"
+			sawCancel = ctx.Value(ctxKey("marker")) == "yes"
 			return DecisionDefault
 		}),
 	)
-	ctx := context.WithValue(context.Background(), "marker", "yes")
+	ctx := context.WithValue(context.Background(), ctxKey("marker"), "yes")
 	if err := a.Prompt(ctx, "hi"); err != nil {
 		t.Fatalf("prompt: %v", err)
 	}

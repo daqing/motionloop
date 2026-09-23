@@ -148,7 +148,7 @@ func parsePath(path string) (parsedFile, error) {
 	if err != nil {
 		return parsedFile{}, fmt.Errorf("session: open: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	pf, err := parseFile(f)
 	if err != nil {
 		return parsedFile{}, fmt.Errorf("session: %s: %w", path, err)

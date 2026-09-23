@@ -258,6 +258,44 @@ func (a *Agent) PatchPrompt(sections map[string]string) error {
 	return nil
 }
 
+// SetProvider swaps the LLM backend between runs.
+func (a *Agent) SetProvider(p llm.Provider) error {
+	if !a.beginRun() {
+		return ErrRunInProgress
+	}
+	defer a.endRun()
+	a.mu.Lock()
+	a.provider = p
+	a.mu.Unlock()
+	return nil
+}
+
+// SetModel switches the model between runs. Callers persisting sessions
+// record the switch with AppendModelChange.
+func (a *Agent) SetModel(m llm.Model) error {
+	if !a.beginRun() {
+		return ErrRunInProgress
+	}
+	defer a.endRun()
+	a.mu.Lock()
+	a.model = m
+	a.mu.Unlock()
+	return nil
+}
+
+// SetStreamOptions replaces the base provider options (API key, base
+// URL, ...) between runs.
+func (a *Agent) SetStreamOptions(opts llm.StreamOptions) error {
+	if !a.beginRun() {
+		return ErrRunInProgress
+	}
+	defer a.endRun()
+	a.mu.Lock()
+	a.streamOpts = opts
+	a.mu.Unlock()
+	return nil
+}
+
 // SetTools replaces the tool loadout between runs and records the diff as
 // a system message (toolsAdded/toolsRemoved) so sessions replay the
 // loadout.

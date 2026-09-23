@@ -49,15 +49,6 @@ func (w *Workspace) resolve(name string) (string, error) {
 	return abs, nil
 }
 
-// rel displays an absolute path relative to the workspace root.
-func (w *Workspace) rel(abs string) string {
-	rel, err := filepath.Rel(w.Root, abs)
-	if err != nil {
-		return abs
-	}
-	return rel
-}
-
 // markRead records that the agent has seen the file's current content.
 func (w *Workspace) markRead(abs string) {
 	w.mu.Lock()

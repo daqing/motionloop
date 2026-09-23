@@ -110,7 +110,6 @@ func matchLines(s, sub string) []int {
 	for i := 0; i < len(s); {
 		idx := strings.Index(s[i:], sub)
 		if idx < 0 {
-			line += strings.Count(s[i:], "\n")
 			break
 		}
 		line += strings.Count(s[i:i+idx], "\n")
