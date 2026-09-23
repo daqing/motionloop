@@ -11,9 +11,12 @@ import (
 	"github.com/daqing/motionloop/agent"
 	"github.com/daqing/motionloop/config"
 	"github.com/daqing/motionloop/llm"
+	"github.com/daqing/motionloop/memory"
 	"github.com/daqing/motionloop/profile"
 	"github.com/daqing/motionloop/profile/coding"
 	promptpkg "github.com/daqing/motionloop/prompt"
+	"github.com/daqing/motionloop/session"
+	"github.com/daqing/motionloop/skills"
 	"github.com/daqing/motionloop/tools"
 )
 
@@ -114,6 +117,7 @@ func run(ctx context.Context, providerFlag, modelFlag, profileFlag, systemPrompt
 	}
 
 	var options []agent.Option
+	var extraTools []agent.Tool
 	if systemPromptPath != "" {
 		content, err := os.ReadFile(systemPromptPath)
 		if err != nil {
@@ -125,10 +129,33 @@ func run(ctx context.Context, providerFlag, modelFlag, profileFlag, systemPrompt
 		if err := applyPromptOverrides(sections, prof.Name, cwd, trusted); err != nil {
 			return err
 		}
+
+		skillDirs := skills.DefaultDirs(home, cwd, trusted)
+		skillList, warns, err := skills.Discover(skillDirs)
+		if err != nil {
+			return err
+		}
+		for _, w := range warns {
+			fmt.Fprintln(os.Stderr, "motionloop: skill:", w)
+		}
+		if idx := skills.Index(skillList); idx != "" {
+			sections.Set(promptpkg.SectionSkills, idx)
+		}
+		extraTools = append(extraTools, &tools.SkillsLoad{List: skillList})
+
+		memStore := memory.NewStore(filepath.Join(home, ".motionloop", "memory"))
+		memSection := memory.UsageSection()
+		slug := session.WorkspaceSlug(cwd)
+		if idx := memStore.Index(slug); idx != "" {
+			memSection += "\n\n" + idx
+		}
+		sections.Set(promptpkg.SectionMemory, memSection)
+		extraTools = append(extraTools, &tools.MemorySave{Store: memStore, Slug: slug})
+
 		options = append(options, agent.WithSystemMessage(sections.ToMessage()))
 	}
 	options = append(options,
-		agent.WithTools(prof.Tools(ws)...),
+		agent.WithTools(append(prof.Tools(ws), extraTools...)...),
 		agent.WithThinkingLevel(prof.ThinkingLevel),
 		agent.WithStreamOptions(opts),
 	)
