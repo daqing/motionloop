@@ -156,6 +156,28 @@ func parsePath(path string) (parsedFile, error) {
 	return pf, nil
 }
 
+// Inspect parses a session file for display: the header, every entry in
+// file order, and the set of entry ids on the current chain.
+func Inspect(path string) (Header, []Entry, map[string]bool, error) {
+	pf, err := parsePath(path)
+	if err != nil {
+		return Header{}, nil, nil, err
+	}
+	entries, err := migrate(pf.header, pf.entries)
+	if err != nil {
+		return Header{}, nil, nil, err
+	}
+	chain, _, err := chainOf(entries, "")
+	if err != nil {
+		return Header{}, nil, nil, fmt.Errorf("session: %s: %w", path, err)
+	}
+	onChain := map[string]bool{}
+	for _, e := range chain {
+		onChain[e.ID] = true
+	}
+	return pf.header, entries, onChain, nil
+}
+
 // Session is an open append-only session file.
 type Session struct {
 	path   string
@@ -198,6 +220,18 @@ func (s *Session) AppendThinkingLevelChange(level llm.ThinkingLevel) error {
 // AppendUsage records a usage summary.
 func (s *Session) AppendUsage(u llm.Usage) error {
 	return s.append(Entry{Type: TypeUsage, Usage: &u})
+}
+
+// AppendCompaction records one compaction: summary text, the estimated
+// token count before compacting, and how many non-system messages of the
+// current fold state were summarized.
+func (s *Session) AppendCompaction(summary string, tokensBefore int64, summarizedCount int) error {
+	return s.append(Entry{
+		Type:            TypeCompaction,
+		Summary:         summary,
+		TokensBefore:    tokensBefore,
+		SummarizedCount: summarizedCount,
+	})
 }
 
 // Branch rewinds the append point to an earlier entry in this file; the

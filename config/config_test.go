@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/daqing/motionloop/llm"
@@ -61,6 +62,18 @@ func TestLoadPrecedence(t *testing.T) {
 			want:   Settings{Provider: "anthropic", Profile: "custom"},
 		},
 		{
+			name:    "compaction threshold layers global then project",
+			global:  `{"compactionThreshold":12000}`,
+			project: `{"compactionThreshold":8000}`,
+			trusted: true,
+			want:    Settings{Provider: "openai", Profile: "coding", CompactionThreshold: 8000},
+		},
+		{
+			name:   "compaction threshold negative disables",
+			global: `{"compactionThreshold":-1}`,
+			want:   Settings{Provider: "openai", Profile: "coding", CompactionThreshold: -1},
+		},
+		{
 			name:   "malformed settings rejected",
 			global: `{`,
 			want:   Settings{Provider: "openai", Profile: "coding"},
@@ -98,6 +111,13 @@ func TestLoadPrecedence(t *testing.T) {
 		writeJSON(t, filepath.Join(global, "settings.json"), `{`)
 		if _, err := Load(Sources{GlobalDir: global}); err == nil {
 			t.Fatal("want parse error")
+		}
+	})
+
+	t.Run("non-integer compaction threshold rejected", func(t *testing.T) {
+		writeJSON(t, filepath.Join(global, "settings.json"), `{"compactionThreshold":"big"}`)
+		if _, err := Load(Sources{GlobalDir: global}); err == nil || !strings.Contains(err.Error(), "compactionThreshold") {
+			t.Fatalf("err = %v, want compactionThreshold type error", err)
 		}
 	})
 }

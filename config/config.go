@@ -15,6 +15,9 @@ type Settings struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
 	Profile  string `json:"profile"`
+	// CompactionThreshold is the estimated-token trigger for transcript
+	// compaction: 0 means the default, negative disables compaction.
+	CompactionThreshold int `json:"compactionThreshold"`
 }
 
 // Defaults returns the built-in settings.
@@ -94,6 +97,13 @@ func applyJSON(s *Settings, m map[string]any) error {
 		if str != "" {
 			*field = str
 		}
+	}
+	if v, ok := m["compactionThreshold"]; ok && v != nil {
+		n, ok := v.(float64)
+		if !ok || n != float64(int(n)) {
+			return fmt.Errorf("config: setting %q must be an integer", "compactionThreshold")
+		}
+		s.CompactionThreshold = int(n)
 	}
 	return nil
 }

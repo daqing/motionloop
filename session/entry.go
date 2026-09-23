@@ -26,6 +26,7 @@ const (
 	TypeModelChange         = "model_change"
 	TypeThinkingLevelChange = "thinking_level_change"
 	TypeUsage               = "usage"
+	TypeCompaction          = "compaction"
 )
 
 // Header is the first line of a session file. It is metadata only and not
@@ -51,6 +52,10 @@ type Entry struct {
 	ModelID       string            `json:"modelId,omitempty"`
 	ThinkingLevel llm.ThinkingLevel `json:"thinkingLevel,omitempty"`
 	Usage         *llm.Usage        `json:"usage,omitempty"`
+	// compaction payload
+	Summary         string `json:"summary,omitempty"`
+	TokensBefore    int64  `json:"tokensBefore,omitempty"`
+	SummarizedCount int    `json:"summarizedCount,omitempty"`
 }
 
 // newEntryID returns a short unique entry id (8 hex chars, pi-style).

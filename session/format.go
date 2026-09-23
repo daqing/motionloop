@@ -164,6 +164,8 @@ func applyEntry(st *State, e Entry) {
 			u := *e.Usage
 			st.Usage = &u
 		}
+	case TypeCompaction:
+		st.Messages = compactedView(st.Messages, e.Summary, e.SummarizedCount)
 	}
 }
 

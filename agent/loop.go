@@ -100,6 +100,10 @@ type Agent struct {
 	tools        []Tool
 	systemPrompt string
 	systemMsg    *llm.Message
+	// freshSystem marks a system message appended by this run's Prompt;
+	// only then does the loop emit its message events (a resumed
+	// transcript already carries its own system row).
+	freshSystem bool
 
 	beforeToolCall   BeforeToolCall
 	afterToolCall    AfterToolCall
@@ -212,6 +216,7 @@ func (a *Agent) Prompt(ctx context.Context, input string) error {
 		switch {
 		case a.systemMsg != nil:
 			a.messages = append(a.messages, *a.systemMsg)
+			a.freshSystem = true
 		case a.systemPrompt != "":
 			msg := llm.Message{
 				Role:      llm.RoleSystem,
@@ -220,6 +225,7 @@ func (a *Agent) Prompt(ctx context.Context, input string) error {
 			}
 			a.messages = append(a.messages, msg)
 			a.systemMsg = &msg
+			a.freshSystem = true
 		}
 	}
 	a.mu.Unlock()
@@ -321,10 +327,11 @@ func (a *Agent) loop(ctx context.Context, firstPending *llm.Message) error {
 			pending = m
 		}
 		a.emit(TurnStart{})
-		if first && a.systemMsg != nil {
+		if first && a.freshSystem && a.systemMsg != nil {
 			a.mu.Lock()
 			sys := *a.systemMsg
 			a.systemMsg = nil
+			a.freshSystem = false
 			a.mu.Unlock()
 			a.emit(MessageStart{Message: sys})
 			a.emit(MessageEnd{Message: sys})

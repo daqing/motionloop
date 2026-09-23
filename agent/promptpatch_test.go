@@ -3,6 +3,7 @@ package agent_test
 import (
 	"context"
 	"reflect"
+	"sync"
 	"testing"
 
 	"github.com/daqing/motionloop/agent"
@@ -142,6 +143,50 @@ func TestSetToolsRemoval(t *testing.T) {
 	last := msgs[len(msgs)-1]
 	if last.Role != llm.RoleSystem || len(last.ToolsRemoved) != 1 || last.ToolsRemoved[0] != "beta" {
 		t.Fatalf("diff message = %+v", last)
+	}
+}
+
+// TestResumeDoesNotDuplicateSystemMessage seeds a replayed transcript and
+// a fresh system message — the loop must not emit (and thus persist)
+// another system row for a transcript that already has one.
+func TestResumeDoesNotDuplicateSystemMessage(t *testing.T) {
+	fake := agent.NewFakeProvider(agent.FakeTextEvents("ok"))
+	sys := llm.Message{
+		Role:      llm.RoleSystem,
+		Content:   []llm.ContentBlock{llm.TextBlock{Text: "original prompt"}},
+		Sections:  map[string]string{"identity": "v1"},
+		Timestamp: 1,
+	}
+	seed := []llm.Message{sys, {Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "past"}}, Timestamp: 2}}
+
+	var mu sync.Mutex
+	starts := 0
+	a := agent.New(fake, llm.Model{ProviderID: "fake", ModelID: "test"},
+		agent.WithMessages(seed...),
+		agent.WithSystemMessage(llm.Message{
+			Role:     llm.RoleSystem,
+			Content:  []llm.ContentBlock{llm.TextBlock{Text: "rebuilt prompt"}},
+			Sections: map[string]string{"identity": "v2"},
+		}),
+	)
+	a.Subscribe(func(ev agent.Event) {
+		if _, ok := ev.(agent.MessageStart); ok {
+			mu.Lock()
+			starts++
+			mu.Unlock()
+		}
+	})
+	if err := a.Prompt(context.Background(), "next"); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if starts != 2 { // new user + assistant only; no re-emitted system row
+		t.Fatalf("message_start count = %d, want 2 (no system re-emission on resume)", starts)
+	}
+	msgs := a.Messages()
+	if msgs[0].Sections["identity"] != "v1" {
+		t.Fatalf("seeded transcript must keep its own system row: %+v", msgs[0])
 	}
 }
 

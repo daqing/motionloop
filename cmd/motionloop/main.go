@@ -32,6 +32,12 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "session":
+			if err := runSessionCommand(os.Args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, "motionloop:", err)
+				os.Exit(1)
+			}
+			return
 		}
 	}
 
@@ -49,6 +55,7 @@ func main() {
 	}
 	if *promptFlag == "" {
 		fmt.Fprintln(os.Stderr, "usage: motionloop -p <prompt> [--provider id] [--model id] [--profile name] [--system-prompt file]")
+		fmt.Fprintln(os.Stderr, "       motionloop session ls | show <id> | fork <id> | resume <id> -p <prompt>")
 		fmt.Fprintln(os.Stderr, "       motionloop trust | untrust")
 		fmt.Fprintln(os.Stderr, "       motionloop --version")
 		os.Exit(2)
@@ -61,108 +68,33 @@ func main() {
 }
 
 func run(ctx context.Context, providerFlag, modelFlag, profileFlag, systemPromptPath, prompt string) error {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
-	}
-	cwd, err := os.Getwd()
+	app, err := prepare(providerFlag, modelFlag, profileFlag)
 	if err != nil {
 		return err
 	}
 
-	trustStore, err := config.OpenTrustStore(filepath.Join(home, ".motionloop", "trust.json"))
+	mgr := session.NewManager(sessionsRoot(app.home))
+	sess, err := mgr.Create(app.cwd)
 	if err != nil {
 		return err
 	}
-	trusted := trustStore.Status(cwd)
-	if !trusted {
-		fmt.Fprintln(os.Stderr, "motionloop: project not trusted; project-level config and prompts skipped (run: motionloop trust)")
-	}
+	defer sess.Close()
 
-	settings, err := config.Load(config.Sources{
-		GlobalDir:  filepath.Join(home, ".motionloop"),
-		ProjectDir: filepath.Join(cwd, ".motionloop"),
-		Trusted:    trusted,
-	})
+	options, err := app.buildOptions(systemPromptPath, nil, sess)
 	if err != nil {
 		return err
 	}
-	providerID := firstNonEmpty(providerFlag, settings.Provider)
-	modelID := firstNonEmpty(modelFlag, settings.Model)
-	profileName := firstNonEmpty(profileFlag, settings.Profile)
-
-	provider, err := llm.Resolve(providerID)
-	if err != nil {
-		return err
-	}
-	catalog, customEnvs, err := config.LoadModels(filepath.Join(home, ".motionloop", "models.json"))
-	if err != nil {
-		return err
-	}
-	model, err := config.ResolveModel(provider, modelID, catalog)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintln(os.Stderr, "motionloop:", model.String())
-
-	opts := llm.StreamOptions{APIKey: config.ResolveAPIKey(providerID, customEnvs[providerID])}
-
-	ws, err := tools.NewWorkspace(cwd)
-	if err != nil {
-		return err
-	}
-	prof, err := lookupProfile(profileName)
-	if err != nil {
-		return err
-	}
-
-	var options []agent.Option
-	var extraTools []agent.Tool
-	if systemPromptPath != "" {
-		content, err := os.ReadFile(systemPromptPath)
-		if err != nil {
-			return fmt.Errorf("read system prompt: %w", err)
-		}
-		options = append(options, agent.WithSystemPrompt(string(content)))
-	} else {
-		sections := prof.Prompt(promptpkg.DetectEnvironment(cwd))
-		if err := applyPromptOverrides(sections, prof.Name, cwd, trusted); err != nil {
-			return err
-		}
-
-		skillDirs := skills.DefaultDirs(home, cwd, trusted)
-		skillList, warns, err := skills.Discover(skillDirs)
-		if err != nil {
-			return err
-		}
-		for _, w := range warns {
-			fmt.Fprintln(os.Stderr, "motionloop: skill:", w)
-		}
-		if idx := skills.Index(skillList); idx != "" {
-			sections.Set(promptpkg.SectionSkills, idx)
-		}
-		extraTools = append(extraTools, &tools.SkillsLoad{List: skillList})
-
-		memStore := memory.NewStore(filepath.Join(home, ".motionloop", "memory"))
-		memSection := memory.UsageSection()
-		slug := session.WorkspaceSlug(cwd)
-		if idx := memStore.Index(slug); idx != "" {
-			memSection += "\n\n" + idx
-		}
-		sections.Set(promptpkg.SectionMemory, memSection)
-		extraTools = append(extraTools, &tools.MemorySave{Store: memStore, Slug: slug})
-
-		options = append(options, agent.WithSystemMessage(sections.ToMessage()))
-	}
-	options = append(options,
-		agent.WithTools(append(prof.Tools(ws), extraTools...)...),
-		agent.WithThinkingLevel(prof.ThinkingLevel),
-		agent.WithStreamOptions(opts),
-	)
-
-	a := agent.New(provider, model, options...)
+	a := agent.New(app.provider, app.model, options...)
+	rec := session.NewRecorder(sess)
+	a.Subscribe(rec.Handle)
 	a.Subscribe(renderEvent)
-	return a.Prompt(ctx, prompt)
+	if err := a.Prompt(ctx, prompt); err != nil {
+		return err
+	}
+	if err := rec.Err(); err != nil {
+		return fmt.Errorf("session recording: %w", err)
+	}
+	return nil
 }
 
 func runTrust(trust bool) error {
@@ -190,6 +122,150 @@ func runTrust(trust bool) error {
 	}
 	fmt.Printf("untrusted %s\n", cwd)
 	return nil
+}
+
+// app carries the resolved runtime pieces shared by every entry point.
+type app struct {
+	home       string
+	cwd        string
+	trusted    bool
+	settings   config.Settings
+	ws         *tools.Workspace
+	prof       profile.Profile
+	provider   llm.Provider
+	model      llm.Model
+	streamOpts llm.StreamOptions
+}
+
+// prepare resolves configuration, provider, model, and profile. Empty
+// flags fall back to settings and defaults.
+func prepare(providerFlag, modelFlag, profileFlag string) (*app, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+	trustStore, err := config.OpenTrustStore(filepath.Join(home, ".motionloop", "trust.json"))
+	if err != nil {
+		return nil, err
+	}
+	trusted := trustStore.Status(cwd)
+	if !trusted {
+		fmt.Fprintln(os.Stderr, "motionloop: project not trusted; project-level config and prompts skipped (run: motionloop trust)")
+	}
+	settings, err := config.Load(config.Sources{
+		GlobalDir:  filepath.Join(home, ".motionloop"),
+		ProjectDir: filepath.Join(cwd, ".motionloop"),
+		Trusted:    trusted,
+	})
+	if err != nil {
+		return nil, err
+	}
+	providerID := firstNonEmpty(providerFlag, settings.Provider)
+	modelID := firstNonEmpty(modelFlag, settings.Model)
+	profileName := firstNonEmpty(profileFlag, settings.Profile)
+
+	provider, err := llm.Resolve(providerID)
+	if err != nil {
+		return nil, err
+	}
+	catalog, customEnvs, err := config.LoadModels(filepath.Join(home, ".motionloop", "models.json"))
+	if err != nil {
+		return nil, err
+	}
+	model, err := config.ResolveModel(provider, modelID, catalog)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Fprintln(os.Stderr, "motionloop:", model.String())
+
+	ws, err := tools.NewWorkspace(cwd)
+	if err != nil {
+		return nil, err
+	}
+	prof, err := lookupProfile(profileName)
+	if err != nil {
+		return nil, err
+	}
+	return &app{
+		home:       home,
+		cwd:        cwd,
+		trusted:    trusted,
+		settings:   settings,
+		ws:         ws,
+		prof:       prof,
+		provider:   provider,
+		model:      model,
+		streamOpts: llm.StreamOptions{APIKey: config.ResolveAPIKey(providerID, customEnvs[providerID])},
+	}, nil
+}
+
+// buildOptions assembles the agent options: system message (or the
+// --system-prompt replacement), tool loadout, skills and memory sections,
+// an optional replayed transcript seed, recording-driven compaction, and
+// base stream options.
+func (a *app) buildOptions(systemPromptPath string, seed []llm.Message, sess *session.Session) ([]agent.Option, error) {
+	var options []agent.Option
+	if len(seed) > 0 {
+		options = append(options, agent.WithMessages(seed...))
+	}
+
+	var extraTools []agent.Tool
+	if systemPromptPath != "" {
+		content, err := os.ReadFile(systemPromptPath)
+		if err != nil {
+			return nil, fmt.Errorf("read system prompt: %w", err)
+		}
+		options = append(options, agent.WithSystemPrompt(string(content)))
+	} else {
+		sections := a.prof.Prompt(promptpkg.DetectEnvironment(a.cwd))
+		if err := applyPromptOverrides(sections, a.prof.Name, a.cwd, a.trusted); err != nil {
+			return nil, err
+		}
+
+		skillList, warns, err := skills.Discover(skills.DefaultDirs(a.home, a.cwd, a.trusted))
+		if err != nil {
+			return nil, err
+		}
+		for _, w := range warns {
+			fmt.Fprintln(os.Stderr, "motionloop: skill:", w)
+		}
+		if idx := skills.Index(skillList); idx != "" {
+			sections.Set(promptpkg.SectionSkills, idx)
+		}
+		extraTools = append(extraTools, &tools.SkillsLoad{List: skillList})
+
+		memStore := memory.NewStore(filepath.Join(a.home, ".motionloop", "memory"))
+		memSection := memory.UsageSection()
+		slug := session.WorkspaceSlug(a.cwd)
+		if idx := memStore.Index(slug); idx != "" {
+			memSection += "\n\n" + idx
+		}
+		sections.Set(promptpkg.SectionMemory, memSection)
+		extraTools = append(extraTools, &tools.MemorySave{Store: memStore, Slug: slug})
+
+		options = append(options, agent.WithSystemMessage(sections.ToMessage()))
+	}
+	options = append(options,
+		agent.WithTools(append(a.prof.Tools(a.ws), extraTools...)...),
+		agent.WithThinkingLevel(a.prof.ThinkingLevel),
+		agent.WithStreamOptions(a.streamOpts),
+	)
+
+	if sess != nil && a.settings.CompactionThreshold >= 0 {
+		compactor := &session.Compactor{
+			Sess:      sess,
+			Provider:  a.provider,
+			Model:     a.model,
+			Opts:      llm.StreamOptions{APIKey: a.streamOpts.APIKey, BaseURL: a.streamOpts.BaseURL},
+			Threshold: a.settings.CompactionThreshold,
+		}
+		options = append(options, agent.WithTransformContext(compactor.Transform))
+	}
+	return options, nil
 }
 
 func lookupProfile(name string) (profile.Profile, error) {
