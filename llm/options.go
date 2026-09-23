@@ -14,14 +14,21 @@ const (
 	ThinkingHigh    ThinkingLevel = "high"
 )
 
-// StreamOptions configures one provider request. The zero value asks for a
-// plain streaming completion with provider defaults.
-type StreamOptions struct {
-	// APIKey is sent as a bearer token. Empty means no Authorization
-	// header, which is correct for keyless endpoints such as local Ollama.
+// Credentials carry the endpoint identity for one provider request.
+type Credentials struct {
+	// APIKey is sent as the bearer token (Authorization for
+	// OpenAI-compatible endpoints, x-api-key for Anthropic). Empty means
+	// no auth header, which is correct for keyless endpoints such as
+	// local Ollama.
 	APIKey string
 	// BaseURL overrides the provider's default endpoint base.
 	BaseURL string
+}
+
+// StreamOptions configures one provider request. The zero value asks for a
+// plain streaming completion with provider defaults.
+type StreamOptions struct {
+	Credentials Credentials
 	// MaxTokens caps output tokens; 0 uses the endpoint default.
 	MaxTokens int64
 	// Temperature is omitted when zero.

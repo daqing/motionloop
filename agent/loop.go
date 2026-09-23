@@ -50,9 +50,22 @@ func WithMessages(msgs ...llm.Message) Option {
 	return func(a *Agent) { a.messages = append(a.messages, msgs...) }
 }
 
-// WithStreamOptions sets base provider options (API key, base URL, ...).
+// WithStreamOptions sets base provider request options (temperature,
+// max tokens, timeout, tools, ...). Credentials set via WithAPIKey and
+// WithBaseURL apply on top of whatever this option leaves in place.
 func WithStreamOptions(opts llm.StreamOptions) Option {
 	return func(a *Agent) { a.streamOpts = opts }
+}
+
+// WithAPIKey sets the provider credential directly — the common path that
+// should not require constructing StreamOptions.
+func WithAPIKey(key string) Option {
+	return func(a *Agent) { a.streamOpts.Credentials.APIKey = key }
+}
+
+// WithBaseURL overrides the provider endpoint base directly.
+func WithBaseURL(url string) Option {
+	return func(a *Agent) { a.streamOpts.Credentials.BaseURL = url }
 }
 
 // WithThinkingLevel selects the reasoning tier for provider requests.

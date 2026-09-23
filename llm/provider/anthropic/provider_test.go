@@ -49,7 +49,7 @@ func TestStreamText(t *testing.T) {
 	p := New("test", srv.URL, nil)
 	got := mustStream(t, p, context.Background(), []llm.Message{
 		{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "hi"}}},
-	}, llm.StreamOptions{APIKey: "sk"})
+	}, llm.StreamOptions{Credentials: llm.Credentials{APIKey: "sk"}})
 
 	want := []llm.StreamEvent{
 		llm.TextDelta{Delta: "Hello"},
@@ -191,8 +191,8 @@ func TestRequestShape(t *testing.T) {
 	}
 	cacheModel := llm.Model{ProviderID: "test", ModelID: "test-model", Capabilities: llm.Capabilities{Cache: true}}
 	ch, err := p.Stream(context.Background(), cacheModel, msgs, llm.StreamOptions{
-		APIKey: "sk-ant",
-		Tools:  []llm.ToolDecl{{Name: "read", Description: "Read", Parameters: json.RawMessage(`{"type":"object"}`)}},
+		Credentials: llm.Credentials{APIKey: "sk-ant"},
+		Tools:       []llm.ToolDecl{{Name: "read", Description: "Read", Parameters: json.RawMessage(`{"type":"object"}`)}},
 	})
 	if err != nil {
 		t.Fatalf("stream: %v", err)

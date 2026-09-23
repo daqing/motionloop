@@ -121,11 +121,12 @@ func compactedView(messages []llm.Message, summary string, summarizedCount int) 
 // original session rows are never removed. Attach with
 // agent.WithTransformContext(compactor.Transform).
 type Compactor struct {
-	Sess      *Session
-	Provider  llm.Provider
-	Model     llm.Model
-	Opts      llm.StreamOptions
-	Estimator TokenEstimator
+	Sess     *Session
+	Provider llm.Provider
+	Model    llm.Model
+	// Credentials authenticate the summarizing request.
+	Credentials llm.Credentials
+	Estimator   TokenEstimator
 	// Threshold is the estimated-token trigger; 0 → DefaultCompactionThreshold.
 	Threshold int
 	// KeepRecent is the verbatim tail; 0 → DefaultKeepRecent.
@@ -199,7 +200,7 @@ func (c *Compactor) summarize(ctx context.Context, span []llm.Message) (string, 
 		Content: []llm.ContentBlock{llm.TextBlock{Text: "Summarize the conversation so far for an agent continuing this work. Preserve: task goals and the current objective, key decisions and their reasons, open items and next steps, and important file paths and commands. Be concise and factual; output only the summary."}},
 	}}, span...)
 
-	ch, err := c.Provider.Stream(ctx, model, msgs, llm.StreamOptions{APIKey: c.Opts.APIKey, BaseURL: c.Opts.BaseURL})
+	ch, err := c.Provider.Stream(ctx, model, msgs, llm.StreamOptions{Credentials: c.Credentials})
 	if err != nil {
 		return "", err
 	}

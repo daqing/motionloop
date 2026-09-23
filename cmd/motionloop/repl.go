@@ -190,7 +190,7 @@ func handleModel(app *app, a *agent.Agent, sess *session.Session, arg string) er
 		return err
 	}
 	app.provider, app.model, app.providerID = provider, model, providerID
-	app.streamOpts.APIKey = config.ResolveAPIKey(providerID, app.customEnvs[providerID])
+	app.streamOpts.Credentials = llm.Credentials{APIKey: config.ResolveAPIKey(providerID, app.customEnvs[providerID])}
 	if err := a.SetStreamOptions(app.streamOpts); err != nil {
 		return err
 	}

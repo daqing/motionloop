@@ -61,7 +61,7 @@ func TestStreamText(t *testing.T) {
 	p := New("test", srv.URL, nil)
 	got := mustStream(t, p, context.Background(),
 		[]llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.TextBlock{Text: "hi"}}}},
-		llm.StreamOptions{APIKey: "k"})
+		llm.StreamOptions{Credentials: llm.Credentials{APIKey: "k"}})
 
 	want := []llm.StreamEvent{
 		llm.ThinkingDelta{Delta: "weighing options"},
@@ -255,9 +255,8 @@ func TestRequestShape(t *testing.T) {
 		{Role: llm.RoleToolResult, ToolCallID: "call_9", ToolName: "read", Content: []llm.ContentBlock{llm.TextBlock{Text: "file body"}}},
 	}
 	events := mustStream(t, p, context.Background(), msgs, llm.StreamOptions{
-		APIKey:  "sk-test",
-		BaseURL: srv.URL,
-		Tools:   []llm.ToolDecl{{Name: "read", Description: "Read a file", Parameters: json.RawMessage(`{"type":"object"}`)}},
+		Credentials: llm.Credentials{APIKey: "sk-test", BaseURL: srv.URL},
+		Tools:       []llm.ToolDecl{{Name: "read", Description: "Read a file", Parameters: json.RawMessage(`{"type":"object"}`)}},
 	})
 	if len(events) != 1 {
 		t.Fatalf("want single Stop, got %+v", events)

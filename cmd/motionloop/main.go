@@ -21,7 +21,7 @@ import (
 )
 
 // version is overridden at build time via -ldflags "-X main.version=...".
-var version = "0.1.0"
+var version = "0.2.0"
 
 func main() {
 	if len(os.Args) > 1 {
@@ -208,7 +208,7 @@ func prepare(providerFlag, modelFlag, profileFlag string) (*app, error) {
 		prof:       prof,
 		provider:   provider,
 		model:      model,
-		streamOpts: llm.StreamOptions{APIKey: config.ResolveAPIKey(providerID, customEnvs[providerID])},
+		streamOpts: llm.StreamOptions{Credentials: llm.Credentials{APIKey: config.ResolveAPIKey(providerID, customEnvs[providerID])}},
 		providerID: providerID,
 		catalog:    catalog,
 		customEnvs: customEnvs,
@@ -270,11 +270,11 @@ func (a *app) buildOptions(systemPromptPath string, seed []llm.Message, sess *se
 	var compactor *session.Compactor
 	if sess != nil && a.settings.CompactionThreshold >= 0 {
 		compactor = &session.Compactor{
-			Sess:      sess,
-			Provider:  a.provider,
-			Model:     a.model,
-			Opts:      llm.StreamOptions{APIKey: a.streamOpts.APIKey, BaseURL: a.streamOpts.BaseURL},
-			Threshold: a.settings.CompactionThreshold,
+			Sess:        sess,
+			Provider:    a.provider,
+			Model:       a.model,
+			Credentials: a.streamOpts.Credentials,
+			Threshold:   a.settings.CompactionThreshold,
 		}
 		options = append(options, agent.WithTransformContext(compactor.Transform))
 	}

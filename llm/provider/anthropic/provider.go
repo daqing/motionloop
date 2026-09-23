@@ -61,7 +61,7 @@ func (p *Provider) Stream(ctx context.Context, model llm.Model, messages []llm.M
 	if err != nil {
 		return failed(err)
 	}
-	baseURL := opts.BaseURL
+	baseURL := opts.Credentials.BaseURL
 	if baseURL == "" {
 		baseURL = p.baseURL
 	}
@@ -72,8 +72,8 @@ func (p *Provider) Stream(ctx context.Context, model llm.Model, messages []llm.M
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("anthropic-version", apiVersionHeader)
-	if opts.APIKey != "" {
-		req.Header.Set("x-api-key", opts.APIKey)
+	if opts.Credentials.APIKey != "" {
+		req.Header.Set("x-api-key", opts.Credentials.APIKey)
 	}
 
 	ch := make(chan llm.StreamEvent, 16)

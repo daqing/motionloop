@@ -53,7 +53,7 @@ func main() {
 	a := agent.New(provider, model,
 		agent.WithTools(tools.Minimal(ws)...), // bash + read + write
 		agent.WithSystemPrompt("You are a helpful assistant."),
-		agent.WithStreamOptions(llm.StreamOptions{APIKey: os.Getenv("GLM_API_KEY")}),
+		agent.WithAPIKey(os.Getenv("GLM_API_KEY")),
 	)
 
 	// 订阅事件流：文本增量、工具执行、用量

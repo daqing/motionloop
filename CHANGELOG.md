@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.2.0 (2026-09-23)
+
+**Breaking**: credentials split out of stream options.
+
+- `llm.StreamOptions` gains a `Credentials{APIKey, BaseURL}` group; the
+  top-level `APIKey`/`BaseURL` fields are gone. Providers read
+  `opts.Credentials`.
+- `agent.WithAPIKey(key)` and `agent.WithBaseURL(url)` are first-class
+  options applying on top of stream shaping — the common path no longer
+  constructs `StreamOptions` just for a key.
+- `session.Compactor` takes `Credentials` directly instead of a full
+  `StreamOptions`.
+
 ## v0.1.0 (2026-09-23)
 
 First release: the full planned feature set through milestone M5.

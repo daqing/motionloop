@@ -60,7 +60,7 @@ func TestModelsJSONCustomEndpoint(t *testing.T) {
 	}
 
 	a := agent.New(provider, model,
-		agent.WithStreamOptions(llm.StreamOptions{APIKey: config.ResolveAPIKey("thirdparty", envs["thirdparty"])}),
+		agent.WithAPIKey(config.ResolveAPIKey("thirdparty", envs["thirdparty"])),
 	)
 	if err := a.Prompt(context.Background(), "hi"); err != nil {
 		t.Fatal(err)
